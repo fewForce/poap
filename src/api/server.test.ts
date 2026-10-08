@@ -1524,6 +1524,31 @@ describe("GET /events/:eventId/attendance", () => {
     expect(h.gateway.requests).toHaveLength(0);
   });
 
+  it("answers for one wallet, so a pass can tell somebody they already have their badge", async () => {
+    const h = harness();
+    await h.attendance.insert({
+      eventId: EVENT_ID,
+      address: ATTENDEE,
+      nftokenId: NFTOKEN_ID,
+      txHash: ACCEPT_TX,
+      ledgerIndex: 4_242_000,
+    });
+
+    const found = await h.app.inject({ method: "GET", url: `/events/${EVENT_ID}/attendance/${ATTENDEE}` });
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toMatchObject({
+      eventId: EVENT_ID,
+      record: { address: ATTENDEE, nftokenId: NFTOKEN_ID, txHash: ACCEPT_TX },
+    });
+
+    // Somebody who has not attended is a 404, not an empty 200.
+    const missing = await h.app.inject({ method: "GET", url: `/events/${EVENT_ID}/attendance/${OTHER}` });
+    expect(missing.statusCode).toBe(404);
+
+    // The index, never the ledger.
+    expect(h.gateway.requests).toHaveLength(0);
+  });
+
   it("400s a nonsense limit", async () => {
     const h = harness();
     const res = await h.app.inject({
