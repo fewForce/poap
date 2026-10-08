@@ -2,12 +2,19 @@
  * Registration: an attendee proves a wallet before the event, so the desk
  * already knows them when they walk in.
  *
- * THE ADDRESS IS NEVER TAKEN FROM THE REQUEST. Not from the body, not from a
- * query parameter, not from a header. It is read off a Xaman SignIn payload
- * that this server created and then resolved against Xaman itself, and the
- * route hands the resolved value straight to the repository without ever
- * consulting what the caller sent. A typed address is a claim; a signed SignIn
- * is proof, and the difference is not cosmetic:
+ * A TYPED ADDRESS IS A CLAIM; ONLY A SIGNATURE IS PROOF. An address gets onto
+ * a registration one of two ways, and both are proof that the registrant holds
+ * its key:
+ *
+ *   - Xaman. The address is never taken from the request at all: it is read
+ *     off a Xaman SignIn payload this server created and resolved against
+ *     Xaman itself, and handed straight to the repository.
+ *   - The wallet's own signature, for the POAP app, which keeps its key on the
+ *     phone and has no Xaman to sign in with. The request names the address,
+ *     and nothing is written until a signature by that address's key over a
+ *     challenge this server issued checks out (src/xrpl/wallet-proof.ts).
+ *
+ * The difference from a typed address is not cosmetic:
  *
  *   - it stops someone registering a wallet that is not theirs;
  *   - it stops a typo. Badges are soulbound (CLAUDE.md) — minted with
@@ -26,8 +33,10 @@ import {
   type ConsumedSignIns,
   type SignInService,
 } from "../../xaman/signin.js";
+import { isSignedByAddress, masterKeyCounts, registrationMessage } from "../../xrpl/wallet-proof.js";
 import type { ApiDeps } from "../deps.js";
-import { eventIdParamsSchema, sendError, type EventIdParams } from "../http-errors.js";
+import { addressSchema, eventIdParamsSchema, sendError, type EventIdParams } from "../http-errors.js";
+import { WalletChallenges } from "../wallet-challenge.js";
 import { toPublicEvent, type PublicEvent } from "./events.js";
 
 /**
@@ -101,11 +110,27 @@ const registerBodySchema = z.object({
   email: z.email().max(254).optional(),
 });
 
+/** The wallet-signature route names its address — and proves it, see the handler. */
+const challengeBodySchema = z.object({ address: addressSchema });
+
+const walletRegisterBodySchema = z.object({
+  address: addressSchema,
+  /** 33 bytes: an ed25519 key (0xED…) or a compressed secp256k1 one. */
+  publicKey: z.string().regex(/^[0-9A-Fa-f]{66}$/),
+  /** 64 bytes for ed25519; a DER secp256k1 signature is about 71. */
+  signature: z.string().regex(/^[0-9A-Fa-f]{64,200}$/),
+  challenge: z.string().min(20).max(300),
+  displayName: z.string().trim().min(1).max(MAX_DISPLAY_NAME),
+  email: z.email().max(254).optional(),
+});
+
 const registrationIdParamsSchema = z.object({ id: z.string().min(1).max(64) });
 
 type SignInBody = z.infer<typeof signInBodySchema>;
 type SignInUuidParams = z.infer<typeof signInUuidParamsSchema>;
 type RegisterBody = z.infer<typeof registerBodySchema>;
+type ChallengeBody = z.infer<typeof challengeBodySchema>;
+type WalletRegisterBody = z.infer<typeof walletRegisterBodySchema>;
 type RegistrationIdParams = z.infer<typeof registrationIdParamsSchema>;
 
 // ---------------------------------------------------------------------------
@@ -167,6 +192,9 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
    * answers `signed: true` forever, so the uuid has to be spent exactly once.
    */
   const consumed: ConsumedSignIns = new MemoryConsumedSignIns();
+
+  /** Stateless, so a challenge outlives a restart — see WalletChallenges. */
+  const challenges = new WalletChallenges(deps.config.admin.sessionSecret);
 
   const limits = deps.rateLimit;
   const rateLimitsOff = limits?.enabled === false;
@@ -386,6 +414,120 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
         // Nothing was written, so the proof was not spent. Hand the uuid back
         // rather than making someone sign again for our failure.
         await consumed.release(signinUuid);
+        throw err;
+      }
+    },
+  );
+
+  /**
+   * POST /api/events/:eventId/registrations/challenge — what to sign.
+   *
+   * The first half of registering with the wallet's own key, for the POAP app.
+   * Bound to this event and this address, good for ten minutes. Costs nothing
+   * and stores nothing.
+   *
+   * 201 {challenge, expiresAt} | 400 bad address | 404 no such open event | 429
+   */
+  app.post<{ Params: EventIdParams; Body: ChallengeBody }>(
+    "/api/events/:eventId/registrations/challenge",
+    {
+      schema: { params: eventIdParamsSchema, body: challengeBodySchema },
+      config: { rateLimit: signinCreateLimit },
+    },
+    async (request, reply) => {
+      const { eventId } = request.params;
+      if (!(await findRegistrableEvent(eventId))) {
+        return sendError(reply, 404, "NOT_FOUND", `No event ${eventId} is open for registration.`, { eventId });
+      }
+      return reply.code(201).send(challenges.issue(eventId, request.body.address));
+    },
+  );
+
+  /**
+   * POST /api/events/:eventId/registrations/wallet — register with a signature.
+   *
+   * The body names the address, and that is only a claim until three things
+   * hold: the challenge is one this server issued for this event and address
+   * and it has not expired; the signature, over the text registrationMessage()
+   * rebuilds from the body, is by that address's key; and the account has not
+   * disabled that key. Then — and only then — the row is written.
+   *
+   * 201 registered | 400 bad body, challenge or signature | 404 no such open event
+   * 409 this address is already registered | 429 | 502 the ledger could not be read
+   */
+  app.post<{ Params: EventIdParams; Body: WalletRegisterBody }>(
+    "/api/events/:eventId/registrations/wallet",
+    {
+      schema: { params: eventIdParamsSchema, body: walletRegisterBodySchema },
+      config: { rateLimit: registerLimit },
+    },
+    async (request, reply) => {
+      const { eventId } = request.params;
+      const { address, publicKey, signature, challenge, displayName, email } = request.body;
+
+      const event = await findRegistrableEvent(eventId);
+      if (!event) {
+        return sendError(reply, 404, "NOT_FOUND", `No event ${eventId} is open for registration.`, { eventId });
+      }
+
+      const fresh = challenges.check(challenge, eventId, address);
+      if (fresh !== "ok") {
+        return sendError(
+          reply,
+          400,
+          "INVALID_INPUT",
+          fresh === "expired"
+            ? "That challenge has expired. Ask for a new one and sign again."
+            : "That challenge was not issued for this wallet and event.",
+          { reason: fresh === "expired" ? "challenge_expired" : "challenge_invalid" },
+        );
+      }
+
+      const message = registrationMessage({ eventId, address, displayName, email: email ?? null, challenge });
+      if (!isSignedByAddress({ address, publicKey, signature, message })) {
+        return sendError(reply, 400, "INVALID_INPUT", "That signature is not from this wallet's key.", {
+          reason: "bad_signature",
+        });
+      }
+
+      if (!(await masterKeyCounts(deps.gateway, address))) {
+        return sendError(
+          reply,
+          400,
+          "INVALID_INPUT",
+          "This wallet has disabled its master key, so a signature from it proves nothing. Register with Xaman instead.",
+          { reason: "master_key_disabled" },
+        );
+      }
+
+      const already = (existing: RegistrationRecord) =>
+        reply.code(409).send({
+          error: { code: "DUPLICATE_CLAIM", message: `${address} is already registered for event ${eventId}.` },
+          registration: toRegistrationView(existing, event),
+        });
+
+      const existing = await registrations.findByAddress(eventId, address);
+      if (existing) return already(existing);
+
+      try {
+        const created = await registrations.create({
+          eventId,
+          address,
+          addressProof: "wallet_signature",
+          displayName,
+          ...(email === undefined ? {} : { email }),
+        });
+        request.log.info(
+          { eventId, address, registrationId: created.id },
+          "registration created from a verified wallet signature",
+        );
+        return reply.code(201).send({ registration: toRegistrationView(created, event) });
+      } catch (err) {
+        // Lost a race against a concurrent registration for the same address.
+        if (err instanceof XrplLayerError && err.code === "DUPLICATE_CLAIM") {
+          const raced = await registrations.findByAddress(eventId, address);
+          if (raced) return already(raced);
+        }
         throw err;
       }
     },

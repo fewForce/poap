@@ -2465,13 +2465,19 @@ a{color:var(--jade)}
     }
 
     // ---- a registered attendee --------------------------------------------
-    var proved = reg.addressProof === "xaman_signin";
+    /* Two ways to prove a wallet, one way not to: Xaman, the POAP app's own
+       signature, or an address somebody typed. */
+    var byApp = reg.addressProof === "wallet_signature";
+    var proved = reg.addressProof === "xaman_signin" || byApp;
     var box = node("div", "who who--id " + (proved ? "who--proved" : "who--typed"));
     box.appendChild(node("div", "who__name", reg.displayName || "Registered attendee"));
     box.appendChild(addrLine(address, label));
 
     var chips = node("div", "chips");
-    chips.appendChild(proved
+    chips.appendChild(byApp
+      ? chip("proved", "wallet proved", "poap app",
+          "This address registered from the POAP app: the attendee signed a challenge with the wallet's key, so the wallet is theirs.")
+      : proved
       ? chip("proved", "wallet proved", "xaman sign-in",
           "This address came out of a Xaman sign-in: the attendee signed a challenge with the key, so the wallet is theirs.")
       : chip("typed", "self-declared", "typed, not proven",

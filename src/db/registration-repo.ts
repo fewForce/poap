@@ -58,7 +58,7 @@ const COLUMNS =
  */
 const ORDER_BY = "ORDER BY id DESC";
 
-const PROOFS: readonly AddressProof[] = ["xaman_signin", "self_declared"];
+const PROOFS: readonly AddressProof[] = ["xaman_signin", "wallet_signature", "self_declared"];
 
 /** Postgres unique_violation / foreign_key_violation. */
 const UNIQUE_VIOLATION = "23505";

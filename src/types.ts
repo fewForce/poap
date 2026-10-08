@@ -646,13 +646,20 @@ export interface EventPhotoRepository {
 // Registration
 // ---------------------------------------------------------------------------
 
-/** How the address on a registration was obtained, and therefore how much to trust it. */
-export type AddressProof = "xaman_signin" | "self_declared";
+/**
+ * How the address on a registration was obtained, and therefore how much to trust it.
+ *
+ * xaman_signin and wallet_signature are both proof that the registrant holds
+ * the address's key: the first through a Xaman SignIn, the second through a
+ * signature over a server challenge (the POAP app, which keeps its own key).
+ * self_declared is a typed address and proves nothing.
+ */
+export type AddressProof = "xaman_signin" | "wallet_signature" | "self_declared";
 
 export interface RegistrationRecord {
   id: string;
   eventId: EventId;
-  /** Classic address. Verified when addressProof is "xaman_signin". */
+  /** Classic address. Verified when addressProof is "xaman_signin" or "wallet_signature". */
   address: string;
   addressProof: AddressProof;
   displayName?: string | null;

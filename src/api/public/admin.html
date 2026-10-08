@@ -2867,6 +2867,10 @@ a{color:var(--jade)}
       var p1 = node("span", "pill pill--xaman", "xaman signed");
       p1.title = "The attendee proved this address by signing in Xaman.";
       tdProof.appendChild(p1);
+    } else if (reg.addressProof === "wallet_signature") {
+      var p3 = node("span", "pill pill--xaman", "app signed");
+      p3.title = "The attendee proved this address by signing with the wallet's key in the POAP app.";
+      tdProof.appendChild(p3);
     } else {
       var p2 = node("span", "pill pill--self", "self declared");
       p2.title = "The attendee typed this address. Nothing proved they hold its key.";

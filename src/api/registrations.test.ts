@@ -15,7 +15,8 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { ZodType } from "zod";
-import { MockGateway } from "../../test/helpers/mock-gateway.js";
+import { ed25519Wallet, type TestWallet } from "../../test/helpers/ed25519-wallet.js";
+import { MockGateway, rippledError } from "../../test/helpers/mock-gateway.js";
 import type { AppConfig } from "../config.js";
 import { NotFoundError, XrplLayerError } from "../errors.js";
 import type {
@@ -33,6 +34,7 @@ import {
   type SignInResolution,
   type SignInService,
 } from "../xaman/signin.js";
+import { registrationMessage } from "../xrpl/wallet-proof.js";
 import type { ApiDeps, ChainOps } from "./deps.js";
 import { registerErrorHandler } from "./http-errors.js";
 import { registerEventRoutes, type AdminGuard } from "./routes/events.js";
@@ -1447,3 +1449,154 @@ describe("buildServer wiring", () => {
     expect(second.statusCode).toBe(429);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Registering with the wallet's own signature — the POAP app
+// ---------------------------------------------------------------------------
+
+describe("POST /api/events/:eventId/registrations/wallet", () => {
+  let h: Harness;
+  let wallet: TestWallet;
+  let gateway: MockGateway;
+
+  beforeEach(() => {
+    h = harness({ config: { admin: { sessionTtlHours: 12, sessionSecret: "s".repeat(64) } } });
+    wallet = ed25519Wallet();
+    gateway = h.deps.gateway as MockGateway;
+    // A brand-new app wallet: not on the ledger until the desk tops it up.
+    gateway.onRequest("account_info", rippledError("actNotFound"));
+  });
+
+  async function challengeFor(eventId: EventId, address = wallet.address): Promise<string> {
+    const res = await h.app.inject({
+      method: "POST",
+      url: `/api/events/${eventId}/registrations/challenge`,
+      payload: { address },
+    });
+    expect(res.statusCode).toBe(201);
+    return res.json().challenge as string;
+  }
+
+  /** What the app sends: the fields, and its signature over the text they make. */
+  function signedBody(
+    eventId: EventId,
+    challenge: string,
+    fields: { displayName?: string; email?: string } = {},
+    signer: TestWallet = wallet,
+  ): Record<string, unknown> {
+    const displayName = fields.displayName ?? "Ada Lovelace";
+    const message = registrationMessage({ eventId, address: wallet.address, displayName, email: fields.email ?? null, challenge });
+    return {
+      address: wallet.address,
+      publicKey: signer.publicKey,
+      signature: signer.sign(message),
+      challenge,
+      displayName,
+      ...(fields.email ? { email: fields.email } : {}),
+    };
+  }
+
+  const register = (eventId: EventId, payload: Record<string, unknown>) =>
+    h.app.inject({ method: "POST", url: `/api/events/${eventId}/registrations/wallet`, payload });
+
+  it("registers the wallet that signed, with the proof recorded", async () => {
+    const challenge = await challengeFor(OPEN_EVENT);
+    const res = await register(OPEN_EVENT, signedBody(OPEN_EVENT, challenge, { email: "ada@example.com" }));
+
+    expect(res.statusCode).toBe(201);
+    expect(res.json().registration).toMatchObject({ address: wallet.address, displayName: "Ada Lovelace" });
+    expect(h.registrations.rows[0]).toMatchObject({
+      eventId: OPEN_EVENT,
+      address: wallet.address,
+      addressProof: "wallet_signature",
+      displayName: "Ada Lovelace",
+      email: "ada@example.com",
+    });
+    expect(h.signIn.created).toHaveLength(0); // Xaman never involved
+  });
+
+  it("works for a live event too, because walk-ups are the point", async () => {
+    const challenge = await challengeFor(LIVE_EVENT);
+    expect((await register(LIVE_EVENT, signedBody(LIVE_EVENT, challenge))).statusCode).toBe(201);
+  });
+
+  it("refuses somebody else's address, signed with their own key", async () => {
+    const challenge = await challengeFor(OPEN_EVENT);
+    const thief = ed25519Wallet();
+    const res = await register(OPEN_EVENT, signedBody(OPEN_EVENT, challenge, {}, thief));
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.details.reason).toBe("bad_signature");
+    expect(h.registrations.rows).toHaveLength(0);
+  });
+
+  it("refuses a body whose name differs from the one that was signed", async () => {
+    const challenge = await challengeFor(OPEN_EVENT);
+    const body = { ...signedBody(OPEN_EVENT, challenge, { displayName: "Ada Lovelace" }), displayName: "Mallory" };
+    const res = await register(OPEN_EVENT, body);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.details.reason).toBe("bad_signature");
+    expect(h.registrations.rows).toHaveLength(0);
+  });
+
+  it("refuses a challenge issued for another event", async () => {
+    const challenge = await challengeFor(LIVE_EVENT);
+    const res = await register(OPEN_EVENT, signedBody(OPEN_EVENT, challenge));
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.details.reason).toBe("challenge_invalid");
+  });
+
+  it("refuses a challenge made up by the caller", async () => {
+    const res = await register(OPEN_EVENT, signedBody(OPEN_EVENT, `${OPEN_EVENT}.${"x".repeat(40)}`));
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.details.reason).toBe("challenge_invalid");
+  });
+
+  it("refuses a wallet that has disabled its master key", async () => {
+    // A fresh harness: beforeEach queued "not on the ledger" for this one.
+    h = harness({ config: { admin: { sessionTtlHours: 12, sessionSecret: "s".repeat(64) } } });
+    (h.deps.gateway as MockGateway).onRequest("account_info", { result: { account_data: { Flags: 0x0010_0000 } } });
+    const challenge = await challengeFor(OPEN_EVENT);
+    const res = await register(OPEN_EVENT, signedBody(OPEN_EVENT, challenge));
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.details.reason).toBe("master_key_disabled");
+    expect(h.registrations.rows).toHaveLength(0);
+  });
+
+  it("409s a second registration with the record they already have", async () => {
+    const first = await challengeFor(OPEN_EVENT);
+    await register(OPEN_EVENT, signedBody(OPEN_EVENT, first));
+    const second = await challengeFor(OPEN_EVENT);
+    const res = await register(OPEN_EVENT, signedBody(OPEN_EVENT, second, { displayName: "Ada L." }));
+
+    expect(res.statusCode).toBe(409);
+    expect(res.json().registration).toMatchObject({ address: wallet.address, displayName: "Ada Lovelace" });
+    expect(h.registrations.rows).toHaveLength(1);
+  });
+
+  it("will not hand out a challenge, or register, for a draft or closed event", async () => {
+    for (const eventId of [DRAFT_EVENT, CLOSED_EVENT]) {
+      const res = await h.app.inject({
+        method: "POST",
+        url: `/api/events/${eventId}/registrations/challenge`,
+        payload: { address: wallet.address },
+      });
+      expect(res.statusCode).toBe(404);
+    }
+    const challenge = await challengeFor(OPEN_EVENT);
+    expect((await register(CLOSED_EVENT, signedBody(CLOSED_EVENT, challenge))).statusCode).toBe(404);
+  });
+
+  it("refuses a challenge for something that is not an address", async () => {
+    const res = await h.app.inject({
+      method: "POST",
+      url: `/api/events/${OPEN_EVENT}/registrations/challenge`,
+      payload: { address: "not-an-address" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
