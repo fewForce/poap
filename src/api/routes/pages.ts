@@ -129,6 +129,7 @@ export function registerPageRoutes(
   // guard covers the /admin/api prefix; serving the login HTML must stay
   // reachable without a session or nobody could ever log in.
   servePage(app, "/admin", "admin.html", dir);
+  servePage(app, "/admin/invitees", "invitees.html", dir);
   servePage(app, "/admin/", "admin.html", dir);
 
   // Public registration. The eventId is read from the path by the page itself.

@@ -28,6 +28,7 @@ import { registerRosterRoute } from "./routes/roster.js";
 import { registerRegistryRoutes } from "./routes/registry.js";
 import { registerStoreRoutes } from "./routes/store.js";
 import { registerTreasuryRoutes } from "./routes/treasury.js";
+import { registerInviteeRoutes } from "./routes/invitees.js";
 import { registerVendorPortalRoutes } from "./routes/vendor-portal.js";
 import { registerVendorRoutes } from "./routes/vendors.js";
 import { registerVerifyRoute } from "./routes/verify.js";
@@ -142,6 +143,8 @@ export function buildServer(deps: ApiDeps): FastifyInstance {
     registerRegistryRoutes(scope, deps);
     // Each event's treasury: its balance, its budget, retries and the sweep.
     registerTreasuryRoutes(scope, deps);
+    // The invite list, and the volunteer app's two calls at the door.
+    registerInviteeRoutes(scope, deps);
     // The store: vendors and prices for the organiser, ordering for the
     // attendee, and the vendor's own order screen. Each no-ops without its stores.
     registerVendorRoutes(scope, deps);

@@ -596,7 +596,7 @@ describe("POST /admin/api/login", () => {
     const res = await login(h);
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ email: ADMIN_EMAIL });
+    expect(res.json()).toEqual({ email: ADMIN_EMAIL, csrf: expect.any(String) });
     expect(h.sessions.rows.size).toBe(1);
   });
 
@@ -824,7 +824,7 @@ describe("requireAdmin / the /admin/api guard", () => {
     const res = await h.app.inject({ method: "GET", url: "/admin/api/me", headers: { cookie } });
 
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ email: ADMIN_EMAIL });
+    expect(res.json()).toEqual({ email: ADMIN_EMAIL, csrf: expect.any(String) });
   });
 
   it("covers an admin route registered by another module", async () => {

@@ -671,6 +671,29 @@ export interface RegistrationRecord {
   checkedInAt?: Date | null;
 }
 
+/** Somebody the organiser invited by email; the volunteer app gives them a wallet. */
+export interface InviteeRecord {
+  id: string;
+  eventId: EventId;
+  /** Lower-cased and trimmed. */
+  email: string;
+  displayName: string | null;
+  /** Set once, by the volunteer app, when it makes their wallet. */
+  address: string | null;
+  walletSetAt: Date | null;
+  createdAt: Date;
+}
+
+export interface InviteeRepository {
+  /** Adds the ones not already on the list; returns how many were new. */
+  addMany(eventId: EventId, entries: Array<{ email: string; displayName?: string | null }>): Promise<number>;
+  list(eventId: EventId): Promise<InviteeRecord[]>;
+  find(eventId: EventId, email: string): Promise<InviteeRecord | null>;
+  /** Sets the address only while none is set. Null when there is no such invitee or it already has one. */
+  setAddress(eventId: EventId, email: string, address: string): Promise<InviteeRecord | null>;
+  remove(eventId: EventId, email: string): Promise<boolean>;
+}
+
 export interface RegistrationRepository {
   create(
     input: Omit<RegistrationRecord, "id" | "registeredAt" | "checkedInAt">,

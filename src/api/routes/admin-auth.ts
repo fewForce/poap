@@ -17,6 +17,7 @@ import { z } from "zod";
 import { ConfigError } from "../../errors.js";
 import {
   clearSessionCookies,
+  csrfTokenFor,
   issueSession,
   refreshCsrfCookie,
   sendAuthError,
@@ -160,11 +161,13 @@ export function registerAdminAuthRoutes(
         }
       }
 
-      await issueSession(reply, deps, state, identity.email);
+      const session = await issueSession(reply, deps, state, identity.email);
 
       request.log.info({ email: identity.email }, "admin signed in");
 
-      return reply.code(200).send({ email: identity.email });
+      // The CSRF token in the body as well as its cookie: an app has no
+      // document.cookie to read it from. It is not a credential on its own.
+      return reply.code(200).send({ email: identity.email, csrf: csrfTokenFor(session.id, state.sessionSecret) });
     },
   );
 
@@ -207,6 +210,6 @@ export function registerAdminAuthRoutes(
     }
 
     refreshCsrfCookie(reply, deps, state, session);
-    return reply.code(200).send({ email: admin.email });
+    return reply.code(200).send({ email: admin.email, csrf: csrfTokenFor(session.id, state.sessionSecret) });
   });
 }

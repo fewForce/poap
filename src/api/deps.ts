@@ -23,6 +23,7 @@ import type {
   MintResult,
   PurchaseRepository,
   RegistrationRepository,
+  InviteeRepository,
   Roster,
   SessionStore,
   TreasuryRepository,
@@ -382,6 +383,8 @@ export interface ApiDeps {
    */
   eventPhotos?: EventPhotoRepository;
   registrations?: RegistrationRepository;
+  /** The invite list the volunteer app checks emails against (/admin/invitees). */
+  invitees?: InviteeRepository;
   /**
    * Xaman SignIn — how an attendee proves the wallet they are registering.
    *
@@ -727,6 +730,7 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
   let events: EventRepository;
   let eventPhotos: EventPhotoRepository;
   let registrations: RegistrationRepository;
+  let invitees: InviteeRepository;
   let disposeStores: (() => Promise<void>) | undefined;
 
   if (config.databaseUrl) {
@@ -741,6 +745,7 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
     sessions = new db.PgSessionStore(pool);
     events = new db.PgEventRepository(pool);
     registrations = new db.PgRegistrationRepository(pool);
+    invitees = new db.PgInviteeRepository(pool);
     eventPhotos = new db.PgEventPhotoRepository(pool);
     disposeStores = () => db.closePool(pool);
   } else {
@@ -758,6 +763,7 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
     // Postgres both are foreign keys and a COUNT.
     events = new db.MemoryEventRepository(attendance);
     registrations = new db.MemoryRegistrationRepository(events);
+    invitees = new db.MemoryInviteeRepository();
     eventPhotos = new db.MemoryEventPhotoRepository();
     // Both carry a foreign key to events in Postgres, and check it here too.
     allowances = new db.MemoryAllowanceLedger({ events });
@@ -870,6 +876,7 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
     events,
     eventPhotos,
     registrations,
+    invitees,
     signIn,
     xaman,
     chain,
