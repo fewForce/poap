@@ -383,7 +383,7 @@ export interface ApiDeps {
    */
   eventPhotos?: EventPhotoRepository;
   registrations?: RegistrationRepository;
-  /** The invite list the volunteer app checks emails against (/admin/invitees). */
+  /** The invite list the volunteer app checks emails against (the event's page in /admin). */
   invitees?: InviteeRepository;
   /**
    * Xaman SignIn — how an attendee proves the wallet they are registering.

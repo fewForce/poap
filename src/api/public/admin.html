@@ -1499,6 +1499,48 @@ a{color:var(--jade)}
           <div id="csv-out"></div>
         </div>
       </div>
+
+      <div class="card" id="invitees-card" style="margin-top:clamp(13px,1.8vw,20px); scroll-margin-top:20px">
+        <div class="card__hd">
+          <span class="card__n">6</span>
+          <span class="label">Invite list</span>
+          <span class="label" id="invitees-count" style="margin-left:auto">&mdash;</span>
+        </div>
+        <div class="card__body">
+          <p class="help" style="margin-top:0">
+            The emails the <b>volunteer app</b> accepts at the door for this event. When somebody
+            registers there, the app makes them a wallet and its address is saved against their email
+            here. One person per line: <code class="mono">email</code> or <code class="mono">email, name</code>.
+          </p>
+          <form class="form" id="invitee-form" novalidate style="gap:10px">
+            <div class="field" id="f-invitees">
+              <label for="in-invitees">Add people</label>
+              <textarea class="in" id="in-invitees" rows="5" spellcheck="false" autocomplete="off"
+                        style="font-family:var(--font-mono); font-size:13px"
+                        placeholder="ada@example.com, Ada Lovelace&#10;grace@example.com"></textarea>
+              <div class="bad" id="e-invitees" hidden></div>
+            </div>
+            <div style="display:flex; gap:9px; align-items:center">
+              <button class="btn btn--go" id="btn-invitees-add" type="submit">Add to the list</button>
+              <span class="label" id="invitees-hint"></span>
+            </div>
+          </form>
+        </div>
+        <div class="tablebox">
+          <table class="t-invitees">
+            <thead>
+              <tr>
+                <th>email</th>
+                <th>name</th>
+                <th>wallet</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="invitees-rows"></tbody>
+          </table>
+        </div>
+        <div id="invitees-empty" class="empty" hidden></div>
+      </div>
     </div>
   </section>
 
@@ -2539,6 +2581,7 @@ a{color:var(--jade)}
       loadVendors();
       loadPhotos();
       loadRegs(0);
+      loadInvitees();
       loadAttendance();
       loadChain();
     });
@@ -2553,6 +2596,7 @@ a{color:var(--jade)}
      ===================================================================== */
 
   var photos = [];
+  var invitees = [];           // the event's invite list, for the volunteer app
 
   function photoRow(p, index) {
     var row = node("div", "photo");
@@ -2686,6 +2730,94 @@ a{color:var(--jade)}
         loadPhotos();
         $("in-photoUrl").focus();
       });
+  }
+
+  /* =====================================================================
+     The invite list: the emails the volunteer app accepts for this event,
+     and the wallet address it saved against each.
+     ===================================================================== */
+  function inviteesPath(suffix) {
+    return "/admin/api/events/" + encodeURIComponent(current.eventId) + "/invitees" + (suffix || "");
+  }
+
+  function paintInvitees() {
+    var rows = $("invitees-rows");
+    clear(rows);
+    var withWallet = 0;
+    for (var i = 0; i < invitees.length; i++) {
+      var inv = invitees[i];
+      if (inv.address) withWallet += 1;
+      var tr = node("tr");
+      tr.appendChild(node("td", null, inv.email));
+      tr.appendChild(node("td", inv.displayName ? null : "td-dim", inv.displayName || "—"));
+      var tdW = node("td");
+      if (inv.address) {
+        tdW.appendChild(node("code", "val", inv.address));
+      } else {
+        tdW.appendChild(node("span", "pill pill--self", "not yet"));
+      }
+      tr.appendChild(tdW);
+      var tdX = node("td");
+      tdX.appendChild(inviteeRemove(inv));
+      tr.appendChild(tdX);
+      rows.appendChild(tr);
+    }
+    var empty = $("invitees-empty");
+    empty.textContent = "Nobody on the list yet. Add emails above.";
+    show(empty, invitees.length === 0);
+    setText("invitees-count", invitees.length + " invited · " + withWallet + " with a wallet");
+  }
+
+  function inviteeRemove(inv) {
+    var b = node("button", "btn btn--tiny", "Remove");
+    b.type = "button";
+    b.addEventListener("click", function () {
+      if (!current || !window.confirm("Take " + inv.email + " off the list?")) return;
+      b.disabled = true;
+      api("DELETE", inviteesPath("/" + encodeURIComponent(inv.email))).then(function (r) {
+        if (!r.ok) {
+          b.disabled = false;
+          flash("detail-flash", "bad", codeOf(r), "That email was not removed.");
+          return;
+        }
+        loadInvitees();
+      });
+    });
+    return b;
+  }
+
+  function loadInvitees() {
+    if (!current) return Promise.resolve();
+    return api("GET", inviteesPath()).then(function (r) {
+      if (!r.ok) return;
+      invitees = (r.json && r.json.invitees) || [];
+      paintInvitees();
+    });
+  }
+
+  function submitInvitees(e) {
+    if (e) e.preventDefault();
+    if (!current) return;
+    fieldError("invitees", "");
+    var text = $("in-invitees").value || "";
+    if (!text.trim()) { fieldError("invitees", "Paste at least one email."); $("in-invitees").focus(); return; }
+    var btn = $("btn-invitees-add");
+    btn.disabled = true;
+    btn.textContent = "Adding…";
+    api("POST", inviteesPath(), { text: text }).then(function (r) {
+      btn.disabled = false;
+      btn.textContent = "Add to the list";
+      if (!r.ok) {
+        fieldError("invitees", (r.json && r.json.error && r.json.error.message) || "Nothing was added.");
+        return;
+      }
+      var j = r.json || {};
+      var rejected = j.rejected || [];
+      setText("invitees-hint", j.added + " added" + (j.alreadyListed ? ", " + j.alreadyListed + " already on the list" : ""));
+      if (rejected.length) fieldError("invitees", "Not an email, so not added: " + rejected.join(" | "));
+      $("in-invitees").value = rejected.join("\n");
+      loadInvitees();
+    });
   }
 
   function paintDetailHead(ev) {
@@ -4691,6 +4823,7 @@ a{color:var(--jade)}
     $("btn-chain").addEventListener("click", function () { if (current) loadChain(); });
     $("event-form").addEventListener("submit", submitForm);
     $("photo-form").addEventListener("submit", submitPhoto);
+    $("invitee-form").addEventListener("submit", submitInvitees);
     $("sweep-form").addEventListener("submit", submitSweep);
     $("btn-sweep-cancel").addEventListener("click", function () { disarmSweep(); paintSweep(); });
     $("in-sweepTo").addEventListener("input", onSweepInput);

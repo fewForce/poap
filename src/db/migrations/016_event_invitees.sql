@@ -2,7 +2,7 @@
 --
 -- The volunteer app registers somebody at the door by email: it checks the
 -- email is on this list, makes them a wallet, and saves the wallet's address
--- here. The organiser fills the list in on /admin/invitees.
+-- here. The organiser fills the list in on the event's page in /admin.
 --
 -- `address` is empty until the volunteer app sets it, and set once.
 
