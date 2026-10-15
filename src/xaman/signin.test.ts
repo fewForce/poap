@@ -16,6 +16,7 @@ import {
   SIGNIN_PAYLOAD_EXPIRE_MINUTES,
   XummSignInService,
   buildSignInRequest,
+  buildVendorSignInRequest,
   type XummFetchedSignIn,
   type XummSignInSdkLike,
 } from "./signin.js";
@@ -111,8 +112,26 @@ describe("buildSignInRequest", () => {
     const request = buildSignInRequest({ eventId: EVENT_ID });
 
     expect(request.custom_meta.blob).toEqual({ kind: "poap-registration", eventId: EVENT_ID });
-    expect(request.custom_meta.identifier).toBe(`poap-reg-${EVENT_ID}`);
+    expect(request.custom_meta.identifier).toMatch(new RegExp(`^poap-reg-${EVENT_ID}-[A-Za-z0-9_-]{8}$`));
     expect(request.custom_meta.instruction).toContain("not a transaction");
+  });
+
+  it("never repeats an identifier, for an event or for a counter", () => {
+    // Xaman refuses a payload whose custom identifier it has seen before, so a
+    // per-event or per-app constant works for the first person and 400s for
+    // everybody after them. This is that bug, in a test.
+    const reg = new Set([
+      buildSignInRequest({ eventId: EVENT_ID }).custom_meta.identifier,
+      buildSignInRequest({ eventId: EVENT_ID }).custom_meta.identifier,
+      buildSignInRequest({ eventId: EVENT_ID }).custom_meta.identifier,
+    ]);
+    expect(reg.size).toBe(3);
+
+    const vendor = new Set([
+      buildVendorSignInRequest().custom_meta.identifier,
+      buildVendorSignInRequest().custom_meta.identifier,
+    ]);
+    expect(vendor.size).toBe(2);
   });
 
   it("passes a return url through only when there is one", () => {
@@ -149,7 +168,14 @@ describe("XummSignInService.create", () => {
 
     const handles = await signIn.create({ eventId: EVENT_ID });
 
-    expect(sdk.createCalls[0]).toEqual(buildSignInRequest({ eventId: EVENT_ID }));
+    // Everything but the identifier, which is new on every build by design.
+    const sent = sdk.createCalls[0] as ReturnType<typeof buildSignInRequest>;
+    const blank = (r: ReturnType<typeof buildSignInRequest>) => ({
+      ...r,
+      custom_meta: { ...r.custom_meta, identifier: "" },
+    });
+    expect(blank(sent)).toEqual(blank(buildSignInRequest({ eventId: EVENT_ID })));
+    expect(sent.custom_meta.identifier).toMatch(new RegExp(`^poap-reg-${EVENT_ID}-[A-Za-z0-9_-]{8}$`));
     expect(handles).toMatchObject({
       uuid: UUID,
       qrPng: CREATED.refs.qr_png,

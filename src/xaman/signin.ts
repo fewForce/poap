@@ -28,6 +28,7 @@ import { ConnectionError, NotFoundError, XrplLayerError } from "../errors.js";
 import type { EventId } from "../types.js";
 import { assertValidAddress, assertValidTaxon } from "../xrpl/encoding.js";
 import type { XummCreatedPayload } from "./client.js";
+import { payloadIdentifier } from "./identifier.js";
 
 /**
  * Minutes the attendee has to approve the sign-in. Longer than the claim
@@ -100,8 +101,8 @@ export function buildSignInRequest(params: SignInRequestParams): XamanSignInRequ
     txjson: { TransactionType: "SignIn" },
     options: { expire: SIGNIN_PAYLOAD_EXPIRE_MINUTES },
     custom_meta: {
-      // Xaman caps the identifier and only accepts [A-Za-z0-9-_.].
-      identifier: `poap-reg-${eventId}`,
+      // One per payload, never per event: see identifier.ts.
+      identifier: payloadIdentifier(`poap-reg-${eventId}`),
       blob: { kind: "poap-registration", eventId },
       instruction:
         `Sign in to register for event ${eventId}. This is not a transaction: ` +
@@ -127,7 +128,7 @@ export function buildVendorSignInRequest(
     txjson: { TransactionType: "SignIn" },
     options: { expire: SIGNIN_PAYLOAD_EXPIRE_MINUTES },
     custom_meta: {
-      identifier: "poap-vendor",
+      identifier: payloadIdentifier("poap-vendor"),
       blob: { kind: "poap-vendor" },
       instruction:
         "Sign in to your vendor counter. This is not a transaction: it costs nothing, moves " +

@@ -8,6 +8,7 @@
 import { isValidClassicAddress } from "xrpl";
 import { z } from "zod";
 import { ValidationError } from "../errors.js";
+import { payloadIdentifier } from "./identifier.js";
 import { dropsToXrpString } from "../money.js";
 import {
   MAX_TAXON,
@@ -152,8 +153,9 @@ export function buildClaimSignRequest(params: ClaimSignRequestParams): XamanClai
       expire: CLAIM_PAYLOAD_EXPIRE_MINUTES,
     },
     custom_meta: {
-      // Xaman caps the identifier and only accepts [A-Za-z0-9-_.]; keep it short.
-      identifier: `poap-${eventId}-${offerId.slice(0, 8).toUpperCase()}`,
+      // The prefix is what the webhook recovery reads back; the rest is what
+      // keeps a second payload for the same offer from being refused.
+      identifier: payloadIdentifier(`poap-${eventId}-${offerId.slice(0, 8).toUpperCase()}`),
       blob: { kind: "poap-claim", eventId, offerId, attendeeAddress },
       instruction:
         `Claim your ${badgeName ?? "attendance badge"} for event ${eventId}. ` +
@@ -280,8 +282,9 @@ export function buildPurchaseSignRequest(params: PurchaseSignRequestParams): Xam
     },
     options: { submit: true, expire: PURCHASE_PAYLOAD_EXPIRE_MINUTES },
     custom_meta: {
-      // Xaman caps the identifier and only accepts [A-Za-z0-9-_.].
-      identifier: `poap-buy-${purchaseId.slice(0, 8).toLowerCase()}`,
+      // Unique per payload: an order whose payload is built twice — a reload,
+      // a retry — must not be refused the second time.
+      identifier: payloadIdentifier(`poap-buy-${purchaseId.slice(0, 8).toLowerCase()}`),
       blob: { kind: "poap-purchase", eventId, purchaseId: purchaseId.toLowerCase() },
       instruction: clip(
         `Pay ${clip(params.vendorName, 60)} ${amountXrp} XRP for ${quantity} × ${clip(params.itemName, 60)}.`,

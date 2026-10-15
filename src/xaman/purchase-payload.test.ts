@@ -66,7 +66,7 @@ describe("buildPurchaseSignRequest", () => {
       expire: PURCHASE_PAYLOAD_EXPIRE_MINUTES,
       return_url: { web: "https://poap.example/attend/700012" },
     });
-    expect(request.custom_meta.identifier).toBe("poap-buy-2f1c6a4e");
+    expect(request.custom_meta.identifier).toMatch(/^poap-buy-2f1c6a4e-[A-Za-z0-9_-]{8}$/);
     expect(request.custom_meta.blob).toEqual({ kind: "poap-purchase", eventId: 700012, purchaseId: ORDER });
     expect(request.custom_meta.instruction).toBe("Pay Dominos 4.5 XRP for 3 × Garlic bread.");
   });

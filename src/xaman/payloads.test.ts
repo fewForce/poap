@@ -55,7 +55,11 @@ describe("buildClaimSignRequest", () => {
 
     expect(request.options).toEqual({ submit: true, expire: CLAIM_PAYLOAD_EXPIRE_MINUTES });
 
-    expect(request.custom_meta.identifier).toBe(`poap-${EVENT_ID}-8685A6D0`);
+    // Prefix, then something new every time: Xaman refuses an identifier it
+    // has already seen, and the same offer can be presented twice.
+    expect(request.custom_meta.identifier).toMatch(
+      new RegExp(`^poap-${EVENT_ID}-8685A6D0-[A-Za-z0-9_-]{8}$`),
+    );
     expect(request.custom_meta.blob).toEqual({
       kind: "poap-claim",
       eventId: EVENT_ID,
