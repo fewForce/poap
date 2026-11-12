@@ -22,6 +22,7 @@ import {
 import { registrationMessage } from "../xrpl/wallet-proof.js";
 import type { ApiDeps, ChainOps } from "./deps.js";
 import { registerErrorHandler } from "./http-errors.js";
+import { registerDeskRoutes } from "./routes/desk.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { buildServer } from "./server.js";
 
@@ -291,6 +292,43 @@ describe("reading a NEAR attendee", () => {
   it("still draws an XRPL badge as XRPL", async () => {
     const svg = await server().inject({ method: "GET", url: `/badge/${XRPL_EVENT}/${XRPL_ATTENDEE}.svg` });
     expect(svg.body).toContain(`XRPL · EVENT ${XRPL_EVENT}`);
+  });
+});
+
+describe("the desk's lookup of a NEAR account", () => {
+  function deskServer() {
+    const app = Fastify({ logger: false });
+    app.setValidatorCompiler(({ schema }) => (data) => {
+      const result = (schema as ZodType).safeParse(data);
+      return result.success ? { value: result.data } : { error: result.error };
+    });
+    registerErrorHandler(app);
+    registerDeskRoutes(app, deps());
+    return app;
+  }
+  const lookup = (app: ReturnType<typeof deskServer>, address: string) =>
+    app.inject({ method: "GET", url: `/admin/api/desk/attendees/${address}?eventId=${NEAR_EVENT}` });
+
+  it("is ready before the mint, and names the badge after it", async () => {
+    const desk = deskServer();
+    const before = (await lookup(desk, "alice.testnet")).json();
+    expect(before).toMatchObject({ chain: "near", valid: true, accountExists: true, attended: false, needsSponsorship: false });
+
+    await server().inject({ method: "POST", url: `/events/${NEAR_EVENT}/claims`, payload: { address: "alice.testnet" } });
+
+    const after = (await lookup(desk, "alice.testnet")).json();
+    expect(after).toMatchObject({ attended: true, attendedTxHash: near.signed[0]!.hash });
+    expect(after.claim.nftokenId).toBe(`${NEAR_EVENT}:alice.testnet`);
+  });
+
+  it("says when a named account does not exist", async () => {
+    const res = (await lookup(deskServer(), "nobody.testnet")).json();
+    expect(res).toMatchObject({ valid: true, accountExists: false, activated: false });
+  });
+
+  it("does not take an XRPL address for a NEAR event", async () => {
+    const res = (await lookup(deskServer(), XRPL_ATTENDEE)).json();
+    expect(res.valid).toBe(false);
   });
 });
 

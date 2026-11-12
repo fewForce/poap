@@ -1259,6 +1259,12 @@ a{color:var(--jade)}
   var CSRF_HEADER = "x-csrf-token";
   var ADDR_RE = /^r[1-9A-HJ-NP-Za-km-z]{24,34}$/;
   var ADDR_FIND = /r[1-9A-HJ-NP-Za-km-z]{24,34}/;
+  /* A NEAR account id, as nearcore checks it: 2 to 64 characters of lowercase
+     letters, digits and - _ separators, in dot-separated parts. Covers named
+     accounts (alice.testnet) and implicit ones (64 hex characters). */
+  var NEAR_RE = /^(?=.{2,64}$)(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
+  var NEAR_FIND = /(?:^|[\s:\/=?&])((?:(?:[a-z\d]+[-_])*[a-z\d]+\.)+(?:testnet|near)|[0-9a-f]{64})(?=$|[\s\/&?#])/;
+  var near = null;             // /health's `near` block: { network, contractId, rpcUrl }, when this server has NEAR
   var MAX_SUBMIT = 512;        // past this we do not bother the server
 
   /* =====================================================================
@@ -1311,10 +1317,20 @@ a{color:var(--jade)}
     return b;
   }
 
-  /** The only two external URLs on this page. Testnet explorers. */
+  /** The only external URLs on this page: block explorers. */
   function explorerLinks(hash) {
     var wrap = node("span", "links");
     if (!hash) return wrap;
+    if (!/^[0-9A-Fa-f]{64}$/.test(hash)) {
+      // A NEAR transaction hash (base58). NearBlocks covers both networks.
+      var nb = node("a", "link", "NearBlocks");
+      var mainnet = near && near.network === "mainnet";
+      nb.href = (mainnet ? "https://nearblocks.io/txns/" : "https://testnet.nearblocks.io/txns/") + encodeURIComponent(hash);
+      nb.target = "_blank";
+      nb.rel = "noopener noreferrer";
+      wrap.appendChild(nb);
+      return wrap;
+    }
     if (state && state.network && state.network !== "testnet") return wrap;
     var targets = [
       ["Bithomp", "https://test.bithomp.com/explorer/" + encodeURIComponent(hash)],
@@ -1692,6 +1708,18 @@ a{color:var(--jade)}
     return "Event " + id;
   }
 
+  /** Whether the event this desk is working issues on NEAR. */
+  function isNear(id) {
+    var e = eventRecord(id);
+    return !!(e && e.chain === "near");
+  }
+
+  /** An address this desk's event can issue to: a NEAR account for a NEAR event, an r-address otherwise. */
+  function validAddress(a) {
+    if (!a) return false;
+    return isNear() ? (NEAR_RE.test(a) && a.indexOf("0x") !== 0) : ADDR_RE.test(a);
+  }
+
   function readPicked() {
     try {
       var raw = localStorage.getItem(EVENT_KEY);
@@ -1726,7 +1754,8 @@ a{color:var(--jade)}
           name: (typeof e.name === "string" && e.name) ? e.name : ("Event " + id),
           status: typeof e.status === "string" ? e.status : "",
           eventDate: typeof e.eventDate === "string" ? e.eventDate : "",
-          venue: typeof e.venue === "string" ? e.venue : ""
+          venue: typeof e.venue === "string" ? e.venue : "",
+          chain: e.chain === "near" ? "near" : "xrpl"
         });
       }
       events = clean;
@@ -1868,7 +1897,15 @@ a{color:var(--jade)}
      What this desk is plugged into — the ledger it writes to and how much is
      left in the badge fund. Signed-in only, so it runs after the door opens.
      ===================================================================== */
+  function loadNear() {
+    return call("GET", "/health").then(function (r) {
+      var n = r.ok && r.json && r.json.near;
+      near = (n && typeof n === "object") ? n : null;
+    });
+  }
+
   function loadState() {
+    loadNear();
     return api("GET", "/admin/api/desk/state").then(function (r) {
       var bnState = $("bn-state");
       if (!r.network) {
@@ -2093,6 +2130,14 @@ a{color:var(--jade)}
   function normalise(raw) {
     var t = String(raw == null ? "" : raw).trim();
     if (!t) return { value: "", raw: t, how: "empty" };
+    if (isNear()) {
+      // NEAR account ids are lowercase; a phone keyboard capitalises the first letter.
+      var lower = t.toLowerCase();
+      if (validAddress(lower)) return { value: lower, raw: t, how: "exact" };
+      var nm = lower.match(NEAR_FIND);
+      if (nm) return { value: nm[1], raw: t, how: "extracted" };
+      return { value: t, raw: t, how: "unrecognised" };
+    }
     if (ADDR_RE.test(t)) return { value: t, raw: t, how: "exact" };
     var m = t.match(ADDR_FIND);
     if (m) return { value: m[0], raw: t, how: "extracted" };
@@ -2168,6 +2213,7 @@ a{color:var(--jade)}
     if (!l) return "error";
     if (l.valid === false) return "invalid";
     if (l.attended === true) return "attended";
+    if (l.chain === "near" && l.accountExists === false) return "noaccount";
     if (l.alreadyHasBadge === true) return "claimed";
     if (l.needsSponsorship === true) return "fund";
     /* OFFERED, NOT CLAIMED — and the difference is the whole card.
@@ -2253,7 +2299,7 @@ a{color:var(--jade)}
     if (!ART_STATES[verdict]) return null;
     var l = look || {};
     var addr = l.address || current;
-    if (!addr || !ADDR_RE.test(addr)) return null;
+    if (!addr || !validAddress(addr)) return null;
     var a = l.art;
     if (!a || typeof a !== "object") return null;
 
@@ -2329,7 +2375,8 @@ a{color:var(--jade)}
     fund:     ["⚡", "Empty wallet", "One press sends their XRP first"],
     ready:    ["→", "Ready", "Clear to issue"],
     waiting:  ["◌", "Waiting on their phone", "Sent to the attendee"],
-    error:    ["✕", "Try again", "Nothing was issued"]
+    error:    ["✕", "Try again", "Nothing was issued"],
+    noaccount: ["?", "No such account", "Nobody holds that NEAR name"]
   };
 
   /**
@@ -2349,6 +2396,8 @@ a{color:var(--jade)}
       if (!owesXrp(look)) return ["⚡", "Needs funding", "Their wallet cannot hold a badge yet"];
       return s;
     }
+    if (verdict === "invalid" && isNear()) s = ["?", "Not an account", "That code was something else"];
+    if (verdict === "attended" && look && look.chain === "near") s = ["✓", "Badge minted", "In their NEAR account"];
     if (verdict !== "attended" && verdict !== "claimed") return s;
     var reg = registrationOf((look && look.address) || current);
     var name = reg && reg.displayName ? String(reg.displayName).trim() : "";
@@ -2530,12 +2579,30 @@ a{color:var(--jade)}
     clear(acts);
 
     if (verdict === "empty") {
-      body.appendChild(stampBlock(
-        "Scan the attendee’s wallet code on the left, or type their address in. " +
-        "Whatever comes back, this card tells you the one thing to do next."));
+      var onNear = isNear();
+      $("addr").placeholder = onNear
+        ? (near && near.network === "mainnet" ? "alice.near" : "alice.testnet") + ", or the 64-character account from their wallet"
+        : "r… paste or type the attendee’s address";
+      body.appendChild(stampBlock(onNear
+        ? "Scan the attendee’s wallet code on the left, or type their NEAR account in. " +
+          "Whatever comes back, this card tells you the one thing to do next."
+        : "Scan the attendee’s wallet code on the left, or type their address in. " +
+          "Whatever comes back, this card tells you the one thing to do next."));
       var evFact = (eventId() == null)
         ? fact("bad", "!", "No event is selected. Pick one at the top before you scan anyone.")
-        : fact("ok", "•", "This desk is working " + eventName() + ".");
+        : fact("ok", "•", "This desk is working " + eventName() + (onNear ? ", on NEAR." : "."));
+      if (onNear) {
+        body.appendChild(facts([
+          evFact,
+          fact("", "→", "Ready — one press mints their badge into their NEAR account. Nothing to accept."),
+          fact("", "■", "Already has it — the badge is in their account; there is nothing to do."),
+          fact("", "?", "Not an account — the code held something else, or a name nobody holds.")
+        ]));
+        acts.appendChild(actBtn("act-focus", "Enter an account", "btn--go", function () { $("addr").focus(); $("addr").select(); }));
+        acts.appendChild(node("span", "spacer"));
+        acts.appendChild(actBtn("act-refresh", "Refresh console", "btn--tiny btn--ghost", function () { loadState(); }));
+        return;
+      }
       body.appendChild(facts([
         evFact,
         (state && state.reward && state.reward.treasuriesConfigured === false)
@@ -2587,9 +2654,11 @@ a{color:var(--jade)}
     }
 
     if (verdict === "invalid") {
-      body.appendChild(stampBlock(
-        "That code was <b>not a wallet address</b>. Nothing is wrong — people scan wifi codes, " +
-        "ticket links and other people’s badges. Ask them to open their wallet and show the receive code."));
+      body.appendChild(stampBlock(isNear()
+        ? "That was <b>not a NEAR account</b> on this event’s network. Nothing is wrong — people scan wifi codes, " +
+          "ticket links and other people’s badges. Ask them to open their wallet and show their account."
+        : "That code was <b>not a wallet address</b>. Nothing is wrong — people scan wifi codes, " +
+          "ticket links and other people’s badges. Ask them to open their wallet and show the receive code."));
       var g = node("div", "grp");
       var gh = node("div", "grp__hd");
       gh.appendChild(node("span", "label", "what the code contained"));
@@ -2617,6 +2686,11 @@ a{color:var(--jade)}
       return;
     }
 
+    if (verdict === "noaccount") { paintNoAccount(body, acts); return; }
+    if (verdict === "attended" && look && look.chain === "near" && !opts.failed) {
+      paintNearMinted(look, { txHash: look.attendedTxHash, tokenId: look.claim && look.claim.nftokenId });
+      return;
+    }
     if (verdict === "attended" || verdict === "claimed") { paintClaimed(body, acts, opts); return; }
     if (verdict === "fund") { paintFund(body, acts, opts); return; }
     if (verdict === "ready") { paintReady(body, acts, opts); return; }
@@ -2818,8 +2892,51 @@ a{color:var(--jade)}
   }
 
   /* ---- ready ---------------------------------------------------------- */
+  function paintNoAccount(body, acts) {
+    var l = look || {};
+    body.appendChild(stampBlock(
+      "There is <b>no NEAR account called " + esc(l.address || current) + "</b>" +
+      (near && near.network ? " on " + esc(near.network) : "") + ". Nothing was issued. " +
+      "Check the spelling with them — or ask them to show the account from their wallet."));
+    body.appendChild(whoRow(l.address || current));
+    if (lookRaw) body.appendChild(rawPanel("Raw · GET " + DESK_ATTENDEES, lookRaw));
+    acts.appendChild(actBtn("act-primary", "Edit by hand", "btn--go", function () { $("addr").focus(); $("addr").select(); }));
+    acts.appendChild(node("span", "spacer"));
+    acts.appendChild(actBtn("act-again", "Check again", "btn--tiny btn--ghost", function () { lookup(current); }));
+    acts.appendChild(nextBtn());
+  }
+
   function paintReady(body, acts, opts) {
     var l = look || {};
+    if (l.chain === "near") {
+      body.appendChild(stampBlock(
+        "Their NEAR account can receive a badge and does not have this one yet. " +
+        "<b>One press mints it straight into their account.</b>"));
+      body.appendChild(whoRow(l.address || current));
+      var implicit = /^[0-9a-f]{64}$/.test(String(l.address || ""));
+      body.appendChild(facts([
+        implicit
+          ? fact("ok", "✓", "Their wallet’s own NEAR account — it needs nothing to receive a badge.")
+          : (l.accountExists === true
+              ? fact("ok", "✓", "This NEAR account exists.")
+              : fact("warn", "!", "Could not check that this account exists. The server checks again before minting.")),
+        fact("ok", "✓", "No badge for this event yet."),
+        fact("", "•", "Nothing to accept on their phone, and no fee for them.")
+      ]));
+      if (opts && opts.failed) {
+        body.appendChild(claimFailure(opts.failed));
+        body.appendChild(rawPanel("Raw · POST /events/" + (eventId() != null ? eventId() : "{eventId}") + "/claims", opts.failed));
+      } else if (lookRaw) {
+        body.appendChild(rawPanel("Raw · GET " + DESK_ATTENDEES, lookRaw));
+      }
+      var goN = actBtn("act-primary", "Issue badge", "btn--go btn--big", function () { issue(false); });
+      goN.disabled = !eventId() || busyAction;
+      acts.appendChild(goN);
+      acts.appendChild(node("span", "spacer"));
+      acts.appendChild(actBtn("act-again", "Check again", "btn--tiny btn--ghost", function () { lookup(current); }));
+      acts.appendChild(nextBtn());
+      return;
+    }
     body.appendChild(stampBlock(
       "Their wallet can receive a badge and does not have this one yet. " +
       "<b>One press issues it and locks it to them.</b>"));
@@ -2860,6 +2977,19 @@ a{color:var(--jade)}
       b.appendChild(node("div", "errbox__hint",
         "Nothing was issued twice — a second badge was never possible. Press Check again to see the one they already have."));
       return b;
+    }
+    if (isNear() && (e.code === "ACCOUNT_NOT_FOUND" || e.code === "CONFLICT" || e.code === "TX_FAILED")) {
+      var nb = node("div", "errbox errbox--warn");
+      nb.appendChild(errCode(e.code + "  ·  HTTP " + r.status));
+      nb.appendChild(node("div", "errbox__msg", e.code === "ACCOUNT_NOT_FOUND"
+        ? "There is no NEAR account by that name."
+        : (e.message || "The badge contract did not mint it.")));
+      nb.appendChild(node("div", "errbox__hint", e.code === "ACCOUNT_NOT_FOUND"
+        ? "No badge was issued. Check the spelling with them, then look them up again."
+        : e.code === "CONFLICT"
+          ? "Another desk may be issuing this badge right now. Wait a moment and press Check again — never a second badge."
+          : "No badge was issued. Press Check again; if it keeps failing, tell the organiser what it says."));
+      return nb;
     }
     if (e.code === "ACCOUNT_NOT_FOUND" || e.code === "ALLOWANCE_DENIED") {
       var c = node("div", "errbox errbox--warn");
@@ -3190,6 +3320,38 @@ a{color:var(--jade)}
     }));
   }
 
+  /* ---- minted on NEAR --------------------------------------------------- */
+  function paintNearMinted(l, j) {
+    verdict = "attended";
+    look = l;
+    var body = $("docket-body");
+    var acts = $("docket-acts");
+    $("docket").setAttribute("data-verdict", "attended");
+    clear(body); clear(acts);
+
+    body.appendChild(stampBlock(
+      "Done. The badge is <b>in their NEAR account</b> and recorded permanently. " +
+      "There is nothing for them to accept. Send them on their way."));
+    body.appendChild(whoRow(l.address || current));
+    body.appendChild(facts([
+      fact("ok", "✓", "Minted to their account on NEAR."),
+      fact("ok", "✓", "Recorded permanently — nothing else is needed from them.")
+    ]));
+    var lock = node("div", "lock");
+    lock.innerHTML = "<b>This cannot be undone or lost.</b> Badges on NEAR cannot be passed on, and even if they " +
+      "burn it, the contract's record that they were here stays.";
+    body.appendChild(lock);
+    body.appendChild(refBlock("reference", [
+      kv("confirmation", j.txHash || l.attendedTxHash, { copy: true, explore: true, hex: true }),
+      kv("badge", j.tokenId || (l.claim && l.claim.nftokenId) || null, { copy: true })
+    ]));
+    if (lastClaim && lastClaim.raw) body.appendChild(rawPanel("Raw · POST /events/" + eventId() + "/claims", lastClaim.raw));
+
+    acts.appendChild(actBtn("act-primary", "Next attendee", "btn--go btn--big", reset));
+    acts.appendChild(node("span", "spacer"));
+    acts.appendChild(node("span", "label", session.length + " issued at this desk"));
+  }
+
   /* ---- confirmed ------------------------------------------------------ */
   function paintConfirmed(l) {
     verdict = "attended";
@@ -3287,6 +3449,17 @@ a{color:var(--jade)}
         return;
       }
       var j = r.json || {};
+      if (j.chain === "near") {
+        // Minted to their account and final: there is nothing to accept, so
+        // nothing to watch. Re-read so the card shows the record, not our word.
+        markConfirmed(addr, j.txHash, j.tokenId, id);
+        lastClaim = { address: addr, nftokenId: j.tokenId, near: true, raw: r };
+        lookup(addr).then(function () {
+          if (current !== addr) return;
+          if (look && look.attended === true) paintNearMinted(look, j);
+        });
+        return;
+      }
       var reused = (r.status === 200 && j.reusedExistingOffer === true);
       recordSession(addr, j.nftokenId, j.offerId, reused);
       lastClaim = {
@@ -3905,6 +4078,8 @@ a{color:var(--jade)}
     var bits = [];
     if (e.eventDate) bits.push(e.eventDate);
     if (e.venue) bits.push(e.venue);
+    // Which wallet the attendees need: it decides what the desk can scan.
+    if (e.chain === "near") bits.push("NEAR");
     if (bits.length) b.appendChild(node("p", "ev__m", bits.join("  \u00b7  ")));
 
     /* The shortcut, and the whole of the memory: this desk worked that event

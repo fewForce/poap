@@ -323,7 +323,10 @@ async function nearAttendeeView(deps: ApiDeps, eventId: EventId, scanned: string
     needsSponsorship: false,
     reserveShortfallXrp: "0",
     allowance: null,
-    claim: facts.claim ? { status: facts.claim.status, nftokenId: facts.claim.nftokenId ?? null, offerId: null } : null,
+    // The token id is in the attendance row once minted; the claim slot may not carry it.
+    claim: facts.claim
+      ? { status: facts.claim.status, nftokenId: facts.claim.nftokenId ?? facts.attendance?.nftokenId ?? null, offerId: null }
+      : null,
     attended,
     ...(facts.attendance ? { attendedTxHash: facts.attendance.txHash } : {}),
     alreadyHasBadge: attended,
