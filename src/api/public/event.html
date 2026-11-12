@@ -653,15 +653,21 @@ a{color:var(--jade)}
 
   /* --------------------------------------------------------------- the head */
 
+  /** Whether this event's badges are on NEAR rather than the XRP Ledger. Set from the event. */
+  var onNear = false;
+
   function paintEvent(ev) {
     evStatus = String(ev.status || "");
     document.title = ev.name;
     $("crumb-here").textContent = ev.name;
-    $("taxon").textContent = "Taxon " + ev.eventId;
+    onNear = ev.chain === "near";
+    $("taxon").textContent = onNear ? "NEAR · event " + ev.eventId : "Taxon " + ev.eventId;
+    if (onNear) $("chain-go").textContent = "Count them on NEAR";
     /* The tag every transaction this deployment submits carries, so somebody
        reading the ledger can tell ours from anybody else's. Published by
-       /health; absent when the deployment has none, and then not shown. */
-    if (health && typeof health.sourceTag === "number") {
+       /health; absent when the deployment has none, and then not shown. A NEAR
+       badge carries no such tag. */
+    if (!onNear && health && typeof health.sourceTag === "number") {
       $("stag").textContent = "Tag " + health.sourceTag;
       $("stag").hidden = false;
     }
@@ -744,7 +750,7 @@ a{color:var(--jade)}
 
         btn.remove();
         out.textContent = "";
-        out.appendChild(document.createTextNode("On the ledger right now: "));
+        out.appendChild(document.createTextNode(onNear ? "On NEAR right now: " : "On the ledger right now: "));
         function put(n, word, last) {
           var b = document.createElement("b");
           b.textContent = num(n);
@@ -763,8 +769,10 @@ a{color:var(--jade)}
       })
       .catch(function () {
         btn.disabled = false;
-        btn.textContent = "Count them on the ledger";
-        out.textContent = " The ledger did not answer just now. Nothing above depends on it.";
+        btn.textContent = onNear ? "Count them on NEAR" : "Count them on the ledger";
+        out.textContent = onNear
+          ? " NEAR did not answer just now. Nothing above depends on it."
+          : " The ledger did not answer just now. Nothing above depends on it.";
       });
   }
 
@@ -946,7 +954,7 @@ a{color:var(--jade)}
       $("shelf-st").hidden = false;
     }
     if (total > 0) {
-      $("shelf-v").textContent = num(total) + " verified on the ledger";
+      $("shelf-v").textContent = num(total) + (onNear ? " verified on NEAR" : " verified on the ledger");
       $("shelf-v").hidden = false;
     }
 
