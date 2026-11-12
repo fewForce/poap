@@ -4,10 +4,13 @@
  * of its key, or forget it on this phone.
  */
 import { router } from "expo-router";
+import { useEffect, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
 import { T } from "@/components/T";
 import { useToast } from "@/components/Toast";
 import { Button, Card, Screen } from "@/components/ui";
+import { nearOf } from "@/lib/near";
+import { useSettings } from "@/lib/settings";
 import { radius, useTheme } from "@/lib/theme";
 import { useWallet, useWalletState, type WalletMeta } from "@/lib/wallet";
 
@@ -18,6 +21,22 @@ export default function WalletTab() {
   const wallet = useWallet();
   const { wallets, active, switchTo, remove } = useWalletState();
   const toast = useToast();
+  // The NEAR account is shown only where it is used: on a server with NEAR events.
+  const { server } = useSettings();
+  // Asked again when the server changes: testnet may have NEAR, mainnet not.
+  // The answer carries the server it is for, so a stale one is never shown.
+  const [nearOn, setNearOn] = useState<string | null>(null);
+  const hasNear = nearOn === server;
+  useEffect(() => {
+    let alive = true;
+    nearOf().then(
+      (n) => alive && setNearOn(n ? server : null),
+      () => undefined,
+    );
+    return () => {
+      alive = false;
+    };
+  }, [server]);
 
   function confirmRemove(meta: WalletMeta) {
     Alert.alert(
@@ -57,6 +76,19 @@ export default function WalletTab() {
               {wallet.address}
             </T>
           </View>
+          {hasNear && wallet.nearAccount ? (
+            <View style={{ gap: 4 }}>
+              <T variant="label" tone="ink3">
+                NEAR account
+              </T>
+              <T variant="mono" selectable style={{ fontSize: 13 }}>
+                {wallet.nearAccount}
+              </T>
+              <T variant="small" tone="ink3">
+                The same key, for events on NEAR. Your backup covers both.
+              </T>
+            </View>
+          ) : null}
           <View style={{ gap: 10, paddingTop: 6 }}>
             <Button label="Back up this wallet" onPress={() => router.push({ pathname: "/backup", params: { id: active.id } })} />
             <Button label="Remove from this phone" kind="quiet" onPress={() => confirmRemove(active)} />

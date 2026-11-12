@@ -14,6 +14,11 @@
  *
  * Then the phone accepts the offer itself (src/lib/collect.ts) and the code
  * turns into the badge. Nobody presses anything.
+ *
+ * A NEAR EVENT is simpler. The code carries the wallet's NEAR account (the
+ * same key), the desk mints straight into it, and there is nothing to accept:
+ * the pass asks poap.live every few seconds whether the badge is recorded,
+ * which is one index read, and turns into the badge when it is.
  */
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useRef, useState } from "react";
@@ -22,7 +27,7 @@ import { QrCode } from "@/components/QrCode";
 import { StatePanel } from "@/components/StatePanel";
 import { T } from "@/components/T";
 import { Button, Card, Notice, Screen } from "@/components/ui";
-import { api, type EventSummary } from "@/lib/api";
+import { api, isNearEvent, type EventSummary } from "@/lib/api";
 import { collect, CollectError, report } from "@/lib/collect";
 import { longDate, stamp } from "@/lib/format";
 import { absolute, ApiError } from "@/lib/http";
@@ -39,6 +44,8 @@ const OFFER_GAP_MS = 13_000;
 const HOT_MS = 60_000;
 /** With no sign from the ledger, ask anyway this often. */
 const IDLE_MS = 60_000;
+/** NEAR: how often the attendance record is asked about. One index read, no chain call. */
+const NEAR_WATCH_MS = 4_000;
 
 type Phase = "loading" | "waiting" | "collecting" | "collected";
 
@@ -58,6 +65,8 @@ export default function PassScreen() {
   const [refused, setRefused] = useState(false);
   /** The name on this phone's registration for the event, if there is one. */
   const [registeredAs, setRegisteredAs] = useState<string | null>(null);
+  /** Known once the event has loaded: a NEAR event shows the NEAR account. */
+  const [onNear, setOnNear] = useState(false);
 
   const busy = useRef(false);
   /** Set when an offer was refused: asking again would only be refused again. */
@@ -148,12 +157,45 @@ export default function PassScreen() {
         if (alive && !done.current) timer = setTimeout(tick, WATCH_MS);
       };
 
+      /** NEAR: the desk mints straight into the account; watch for the record. */
+      const nearTick = async () => {
+        if (!alive || done.current) return;
+        if (AppState.currentState === "active") {
+          try {
+            const rec = await api.attendance(eventId, wallet.nearAccount);
+            setOffline(false);
+            if (rec) {
+              finish(rec.claimedAt ?? undefined);
+              return;
+            }
+          } catch (err) {
+            if (err instanceof ApiError && err.offline) setOffline(true);
+          }
+        }
+        if (alive && !done.current) timer = setTimeout(nearTick, NEAR_WATCH_MS);
+      };
+
       (async () => {
-        api.event(eventId).then(
-          (e) => alive && setEvent(e),
-          () => undefined,
-        );
         loadRegistrations(wallet.address).then((all) => alive && setRegisteredAs(all[String(eventId)]?.displayName ?? null));
+        // The chain decides what the code holds, so the event comes first. An
+        // event that cannot be read (offline, an older server) is an XRPL one,
+        // as every event was before NEAR.
+        const e = await api.event(eventId).catch(() => null);
+        if (!alive) return;
+        if (e) setEvent(e);
+        if (isNearEvent(e)) {
+          setOnNear(true);
+          if (!wallet.nearAccount) {
+            stopped.current = true;
+            setRefused(true);
+            setProblem("This wallet's key cannot be a NEAR account, so it cannot hold this event's badge. Make a new wallet in the app for NEAR events.");
+            setPhase("waiting");
+            return;
+          }
+          setPhase("waiting");
+          void nearTick();
+          return;
+        }
         try {
           if (await checkHeld()) return;
         } catch {
@@ -168,7 +210,7 @@ export default function PassScreen() {
         alive = false;
         if (timer) clearTimeout(timer);
       };
-    }, [validId, eventId, wallet.address, checkHeld, tryCollect]),
+    }, [validId, eventId, wallet.address, wallet.nearAccount, checkHeld, tryCollect, finish]),
   );
 
   if (!validId) {
@@ -196,7 +238,7 @@ export default function PassScreen() {
       <Screen edges={[]} contentStyle={{ paddingTop: 8, gap: 16 }}>
         <Card style={{ alignItems: "center", gap: 14, paddingVertical: 24 }}>
           <Image
-            source={{ uri: absolute(api.badgeArt(eventId, wallet.address)) }}
+            source={{ uri: absolute(api.badgeArt(eventId, onNear ? wallet.nearAccount : wallet.address)) }}
             style={{ width: art, height: art, borderRadius: radius.card, backgroundColor: theme.surface2 }}
             accessibilityLabel={`Your badge for ${title}`}
           />
@@ -210,6 +252,11 @@ export default function PassScreen() {
             {collectedAt ? (
               <T variant="small" tone="jade" weight="semibold">
                 Collected {stamp(collectedAt)}
+              </T>
+            ) : null}
+            {onNear ? (
+              <T variant="small" tone="ink3" style={{ textAlign: "center" }}>
+                In your NEAR account
               </T>
             ) : null}
           </View>
@@ -237,9 +284,11 @@ export default function PassScreen() {
           ) : null}
         </View>
 
-        <View style={{ padding: 9 }}>
-          <QrCode value={wallet.address} size={qr} live={!arriving} />
-        </View>
+        {onNear && !wallet.nearAccount ? null : (
+          <View style={{ padding: 9 }}>
+            <QrCode value={onNear ? wallet.nearAccount : wallet.address} size={qr} live={!arriving} />
+          </View>
+        )}
 
         {registeredAs ? <T variant="heading">{registeredAs}</T> : null}
 
@@ -252,14 +301,16 @@ export default function PassScreen() {
           </View>
         ) : (
           <T variant="meta" tone="ink2" style={{ textAlign: "center" }}>
-            Show this at the desk. Your badge arrives here.
+            {onNear
+              ? "Show this at the desk. Your badge arrives in your NEAR account, with nothing to accept."
+              : "Show this at the desk. Your badge arrives here."}
           </T>
         )}
       </Card>
 
       {problem ? <Notice tone="bad">{problem}</Notice> : null}
       {offline ? <Notice>You are offline. The desk can still scan your pass; the badge arrives once you are back online.</Notice> : null}
-      {!arriving && !refused ? (
+      {!arriving && !refused && !onNear ? (
         <Button
           label="Check for my badge"
           kind="quiet"

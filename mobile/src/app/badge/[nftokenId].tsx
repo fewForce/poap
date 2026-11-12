@@ -1,6 +1,9 @@
 /**
  * One badge, as the badge itself has it: its artwork, and what its metadata
  * and the ledger say about it. No event numbers — that is the event's page.
+ *
+ * A NEAR badge (its id is "{event}:{account}") is read from the NEAR contract
+ * instead, and says what NEAR says about it.
  */
 import { useFocusEffect, useLocalSearchParams } from "expo-router";
 import { useCallback, useState } from "react";
@@ -12,21 +15,26 @@ import { api } from "@/lib/api";
 import { badgeContents, type BadgeContents } from "@/lib/badge";
 import { longDate } from "@/lib/format";
 import { absolute } from "@/lib/http";
-import { heldTokens, LedgerError, TRANSFERABLE, type HeldToken } from "@/lib/ledger";
+import { heldTokens, LedgerError, TRANSFERABLE } from "@/lib/ledger";
+import { isNearTokenId, nearBadges, NearError } from "@/lib/near";
 import { radius, useTheme } from "@/lib/theme";
 import { useWallet } from "@/lib/wallet";
 
 const short = (id: string) => `${id.slice(0, 6)}…${id.slice(-4)}`;
-const looksLikeAddress = (v: string) => /^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(v);
+const looksLikeAddress = (v: string) => /^r[1-9A-HJ-NP-Za-km-z]{24,34}$/.test(v) || /^[0-9a-f]{64}$/.test(v);
 
 /** Already the heading, so not repeated below it. */
 const IN_HEADING = new Set(["event_name"]);
 
 interface Loaded {
-  token: HeldToken;
   contents: BadgeContents | null;
   eventName: string | null;
   when: string | null;
+  /** poap.live's art for this badge, when its metadata names none. */
+  fallbackArt: string;
+  /** "On the XRP Ledger" or "On NEAR", and what that chain says. */
+  where: string;
+  facts: { label: string; value: string; mono?: boolean }[];
 }
 
 export default function BadgeScreen() {
@@ -38,6 +46,39 @@ export default function BadgeScreen() {
   const [error, setError] = useState<{ title: string; body: string } | null>(null);
 
   const load = useCallback(async () => {
+    const id = String(nftokenId);
+    if (isNearTokenId(id)) {
+      try {
+        const token = (await nearBadges(wallet.nearAccount)).find((t) => t.tokenId === id);
+        if (!token) {
+          setError({ title: "Not in this wallet", body: "This badge is not held by the wallet in use." });
+          return;
+        }
+        const [contents, event] = await Promise.all([
+          token.reference ? badgeContents(token.reference).catch(() => null) : Promise.resolve(null),
+          api.event(token.eventId).catch(() => null),
+        ]);
+        setBadge({
+          contents: contents ?? { name: token.title, description: token.description, image: token.media, traits: [] },
+          eventName: event?.name ?? token.title ?? null,
+          when: [longDate(event?.eventDate), event?.venue].filter(Boolean).join(" · ") || null,
+          fallbackArt: absolute(api.badgeArt(token.eventId, wallet.nearAccount)),
+          where: "On NEAR",
+          facts: [
+            { label: "Token", value: token.tokenId.length > 24 ? `${token.tokenId.slice(0, 14)}…${token.tokenId.slice(-4)}` : token.tokenId, mono: true },
+            { label: "Contract", value: token.contractId, mono: true },
+            { label: "Can be sent on", value: "No, it stays in this account" },
+          ],
+        });
+        setError(null);
+      } catch (err) {
+        setError({
+          title: "We could not read this badge",
+          body: err instanceof NearError ? err.message : "Check your connection and try again.",
+        });
+      }
+      return;
+    }
     try {
       const tokens = await heldTokens(wallet.address);
       const token = tokens.find((t) => t.nftokenId.toUpperCase() === String(nftokenId).toUpperCase());
@@ -51,10 +92,17 @@ export default function BadgeScreen() {
       ]);
       const named = contents?.traits.find((t) => t.key === "event_name")?.value;
       setBadge({
-        token,
         contents,
         eventName: event?.name ?? named ?? contents?.name ?? null,
         when: [longDate(event?.eventDate), event?.venue].filter(Boolean).join(" · ") || null,
+        fallbackArt: absolute(api.badgeArt(token.taxon, wallet.address)),
+        where: "On the XRP Ledger",
+        facts: [
+          { label: "Token", value: short(token.nftokenId), mono: true },
+          { label: "Issued by", value: short(token.issuer), mono: true },
+          { label: "Serial", value: `#${token.serial}` },
+          { label: "Can be sent on", value: token.flags & TRANSFERABLE ? "Yes" : "No, it stays in this wallet" },
+        ],
       });
       setError(null);
     } catch (err) {
@@ -63,7 +111,7 @@ export default function BadgeScreen() {
         body: err instanceof LedgerError ? err.message : "Check your connection and try again.",
       });
     }
-  }, [wallet.address, nftokenId]);
+  }, [wallet.address, wallet.nearAccount, nftokenId]);
 
   useFocusEffect(
     useCallback(() => {
@@ -83,16 +131,11 @@ export default function BadgeScreen() {
     );
   }
 
-  const { token, contents } = badge;
-  const art = contents?.image ?? absolute(api.badgeArt(token.taxon, wallet.address));
+  const { contents } = badge;
+  const art = contents?.image ?? badge.fallbackArt;
   const size = Math.min(width - 36, 520);
   const traits = (contents?.traits ?? []).filter((t) => !IN_HEADING.has(t.key));
-  const ledger: { label: string; value: string; mono?: boolean }[] = [
-    { label: "Token", value: short(token.nftokenId), mono: true },
-    { label: "Issued by", value: short(token.issuer), mono: true },
-    { label: "Serial", value: `#${token.serial}` },
-    { label: "Can be sent on", value: token.flags & TRANSFERABLE ? "Yes" : "No, it stays in this wallet" },
-  ];
+  const ledger = badge.facts;
 
   return (
     <Screen edges={[]} contentStyle={{ paddingTop: 16, gap: 20, alignItems: "center" }}>
@@ -133,7 +176,7 @@ export default function BadgeScreen() {
 
       <View style={{ gap: 8, alignSelf: "stretch" }}>
         <T variant="label" tone="ink3">
-          On the XRP Ledger
+          {badge.where}
         </T>
         <Card style={styles.list}>
           {ledger.map((r, i) => (

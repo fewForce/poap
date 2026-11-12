@@ -65,14 +65,26 @@ export function looksLikeEmail(text: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
 }
 
-export async function registerFor(signer: Signer, eventId: number, profile: Profile): Promise<{ registration: Registration; already: boolean }> {
+/**
+ * A NEAR event registers the wallet's NEAR account — the same key, named the
+ * NEAR way — and poap.live checks the signature against that account
+ * (`near_signature`). Everything else is the same.
+ */
+export async function registerFor(
+  signer: Signer,
+  eventId: number,
+  profile: Profile,
+  chain: "xrpl" | "near" = "xrpl",
+): Promise<{ registration: Registration; already: boolean }> {
   const displayName = profile.displayName.trim();
   const email = profile.email?.trim() || null;
+  const address = chain === "near" ? signer.nearAccount : signer.address;
+  if (!address) throw new Error("This wallet's key cannot be a NEAR account. Make a new wallet in the app for NEAR events.");
 
-  const { challenge } = await api.registrationChallenge(eventId, signer.address);
-  const { publicKey, signature } = signer.signRegistration({ eventId, displayName, email, challenge });
+  const { challenge } = await api.registrationChallenge(eventId, address);
+  const { publicKey, signature } = signer.signRegistration({ eventId, displayName, email, challenge }, { chain });
   const result = await api.registerWallet(eventId, {
-    address: signer.address,
+    address,
     publicKey,
     signature,
     challenge,

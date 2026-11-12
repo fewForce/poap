@@ -15,6 +15,12 @@ import { deriveAddress, deriveKeypair, generateSeed, sign } from "ripple-keypair
 
 export interface Signer {
   readonly address: string;
+  /**
+   * The same key as a NEAR account: an ed25519 public key in lowercase hex is
+   * a NEAR "implicit" account. Nothing has to be made or funded for it to hold
+   * a badge, and the written backup covers it too.
+   */
+  readonly nearAccount: string;
   /** Signs a transaction for this wallet. Refuses one for any other account. */
   sign(tx: Record<string, unknown>): { txBlob: string; hash: string };
   /**
@@ -22,7 +28,17 @@ export interface Signer {
    * that is not a transaction. poap.live rebuilds the same text from the fields
    * and checks the signature before it writes a registration.
    */
-  signRegistration(fields: Omit<RegistrationFields, "address">): { publicKey: string; signature: string };
+  signRegistration(
+    fields: Omit<RegistrationFields, "address">,
+    opts?: { chain?: "xrpl" | "near" },
+  ): { publicKey: string; signature: string };
+}
+
+/** The NEAR implicit account of an ed25519 key: its 32 bytes, in lowercase hex. */
+export function nearAccountOf(publicKey: string): string {
+  const key = publicKey.toLowerCase();
+  if (!/^ed[0-9a-f]{64}$/.test(key)) throw new Error("only an ed25519 wallet has a NEAR account");
+  return key.slice(2);
 }
 
 // ---- registering -------------------------------------------------------------
@@ -77,8 +93,17 @@ export function isSeed(text: string): boolean {
 export function signerFromSeed(seed: string): Signer {
   const { publicKey, privateKey } = deriveKeypair(seed.trim());
   const address = deriveAddress(publicKey);
+  // Every wallet this app makes is ed25519. One imported from elsewhere might
+  // not be; it still works on the XRP Ledger, and has no NEAR account.
+  let nearAccount = "";
+  try {
+    nearAccount = nearAccountOf(publicKey);
+  } catch {
+    nearAccount = "";
+  }
   return {
     address,
+    nearAccount,
     sign(tx) {
       if (tx.Account !== address) throw new Error("refusing to sign a transaction for another account");
       const unsigned = { ...tx, SigningPubKey: publicKey };
@@ -86,8 +111,11 @@ export function signerFromSeed(seed: string): Signer {
       const txBlob = encode({ ...unsigned, TxnSignature } as Parameters<typeof encode>[0]);
       return { txBlob, hash: transactionHash(txBlob) };
     },
-    signRegistration(fields) {
-      const message = registrationMessage({ ...fields, address });
+    signRegistration(fields, opts) {
+      const near = opts?.chain === "near";
+      if (near && !nearAccount) throw new Error("this wallet's key cannot be a NEAR account");
+      // The same text either way; on NEAR its address line is the NEAR account.
+      const message = registrationMessage({ ...fields, address: near ? nearAccount : address });
       return { publicKey, signature: sign(stringToHex(message), privateKey) };
     },
   };

@@ -9,7 +9,7 @@ import { DateTile } from "@/components/DateTile";
 import { StatePanel } from "@/components/StatePanel";
 import { T } from "@/components/T";
 import { Bar, Button, Card, Chip, Notice, Screen } from "@/components/ui";
-import { api, type EventSummary } from "@/lib/api";
+import { api, isNearEvent, type EventSummary } from "@/lib/api";
 import { longDate, number, turnout } from "@/lib/format";
 import { absolute, ApiError } from "@/lib/http";
 import { heldTokens } from "@/lib/ledger";
@@ -50,7 +50,15 @@ export default function EventScreen() {
     try {
       const [e, h, r] = await Promise.all([api.event(eventId), held, myRegistration]);
       setEvent(e);
-      setCollected(h);
+      // A NEAR badge is in the wallet's NEAR account, and poap.live's record says so.
+      setCollected(
+        isNearEvent(e)
+          ? await api.attendance(eventId, wallet.nearAccount).then(
+              (rec) => rec !== null,
+              () => null,
+            )
+          : h,
+      );
       setMine(r);
       setError(null);
     } catch (err) {
@@ -63,7 +71,7 @@ export default function EventScreen() {
         });
       }
     }
-  }, [eventId, wallet.address]);
+  }, [eventId, wallet.address, wallet.nearAccount]);
 
   // Fresh on every visit: coming back from the pass, the badge may be here.
   useFocusEffect(
@@ -141,14 +149,14 @@ export default function EventScreen() {
       {collected ? (
         <Card style={styles.badge}>
           <Image
-            source={{ uri: absolute(api.badgeArt(event.eventId, wallet.address)) }}
+            source={{ uri: absolute(api.badgeArt(event.eventId, isNearEvent(event) ? wallet.nearAccount : wallet.address)) }}
             style={[styles.art, { backgroundColor: theme.surface2 }]}
             accessibilityLabel={`Your badge for ${event.name}`}
           />
           <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
             <T variant="heading">You were there</T>
             <T variant="meta" tone="ink2">
-              The badge is in your wallet.
+              {isNearEvent(event) ? "The badge is in your NEAR account." : "The badge is in your wallet."}
             </T>
           </View>
         </Card>

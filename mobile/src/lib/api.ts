@@ -11,6 +11,12 @@
  *   GET  /events/:eventId/claims/for/:address     has the desk issued me a badge?
  *   POST /events/:eventId/claims/:offerId/confirm I accepted it: here is the hash
  *   GET  /badge/:eventId/:address.png             the badge's art
+ *   GET  /events/:eventId/attendance/:address     is my badge recorded? (NEAR events)
+ *
+ * NEAR events (a server with NEAR set up says so in /health) mint straight to
+ * the wallet's NEAR account, so there is nothing to accept: the app shows the
+ * NEAR account on its pass and watches the attendance record. A server
+ * without NEAR has no NEAR events, and none of that ever runs.
  *
  * Registering needs poap.live's wallet-signature routes (the
  * feature/wallet-registration branch); everything else is on poap.live today.
@@ -24,6 +30,17 @@ import { ApiError, request } from "./http";
 
 export type EventStatus = "draft" | "open" | "live" | "closed";
 export type Network = "mainnet" | "testnet" | "devnet";
+export type Chain = "xrpl" | "near";
+
+export interface Health {
+  status: string;
+  network: Network;
+  issuer: string;
+  /** Absent on a server that predates NEAR: XRPL only. */
+  chains?: Chain[];
+  /** Where NEAR badges live, when this server issues them. */
+  near?: { network: "testnet" | "mainnet"; contractId: string; rpcUrl: string };
+}
 
 export interface EventSummary {
   eventId: number;
@@ -32,8 +49,12 @@ export interface EventSummary {
   eventDate: string | null;
   venue: string | null;
   status: EventStatus;
+  /** Absent on a server that predates NEAR, which means XRPL. */
+  chain?: Chain;
   stats?: { registered?: number; attended?: number };
 }
+
+export const isNearEvent = (e: Pick<EventSummary, "chain"> | null | undefined): boolean => e?.chain === "near";
 
 /** What the desk left for this wallet: an offer only it can accept. */
 export interface OfferForMe {
@@ -55,7 +76,7 @@ export interface Registration {
 }
 
 export const api = {
-  health: () => request<{ status: string; network: Network; issuer: string }>("GET", "/health"),
+  health: () => request<Health>("GET", "/health"),
 
   events: () => request<{ events: EventSummary[] }>("GET", "/api/events/summary?limit=50").then((r) => r.events),
   event: (eventId: number) => request<EventSummary>("GET", `/api/events/${eventId}/summary`),
@@ -80,6 +101,20 @@ export const api = {
     }),
 
   badgeArt: (eventId: number, address: string) => `/badge/${eventId}/${address}.png`,
+
+  /** The attendance poap.live has recorded for this address, or null. Index only, no chain read. */
+  async attendance(eventId: number, address: string): Promise<{ txHash: string; claimedAt: string | null } | null> {
+    try {
+      const r = await request<{ record: { txHash: string; claimedAt?: string | null } }>(
+        "GET",
+        `/events/${eventId}/attendance/${encodeURIComponent(address)}`,
+      );
+      return { txHash: r.record.txHash, claimedAt: r.record.claimedAt ?? null };
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  },
 
   registrationChallenge: (eventId: number, address: string) =>
     request<{ challenge: string; expiresAt: string }>("POST", `/api/events/${eventId}/registrations/challenge`, {

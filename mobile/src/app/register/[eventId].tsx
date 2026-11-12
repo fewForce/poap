@@ -9,7 +9,7 @@ import { KeyboardAvoidingView, Platform, View } from "react-native";
 import { T } from "@/components/T";
 import { useToast } from "@/components/Toast";
 import { Button, Field, Notice, Screen } from "@/components/ui";
-import { api, type EventSummary } from "@/lib/api";
+import { api, isNearEvent, type EventSummary } from "@/lib/api";
 import { ApiError } from "@/lib/http";
 import { loadProfile, looksLikeEmail, registerFor } from "@/lib/registrations";
 import { useWallet } from "@/lib/wallet";
@@ -54,7 +54,9 @@ export default function Register() {
     setBusy(true);
     setError(null);
     try {
-      const { already } = await registerFor(wallet, eventId, { displayName: name, email: mail || null });
+      // The event says its chain; ask again if it had not loaded, rather than register the wrong account.
+      const ev = event ?? (await api.event(eventId));
+      const { already } = await registerFor(wallet, eventId, { displayName: name, email: mail || null }, isNearEvent(ev) ? "near" : "xrpl");
       router.back();
       toast.show(already ? "You were already registered" : event ? `Registered for ${event.name}` : "You are registered");
     } catch (err) {

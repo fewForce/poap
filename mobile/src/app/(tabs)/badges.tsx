@@ -3,6 +3,10 @@
  * ledger and named from poap.live's event list (a badge's taxon is its event
  * id). The art is the badge's own, served by poap.live for this wallet and
  * that event. Tapping one opens the badge, not the event.
+ *
+ * NEAR badges sit in the same wall: the same key is a NEAR account, and its
+ * badges are read from the server's NEAR contract (src/lib/near.ts). On a
+ * server without NEAR that read is skipped.
  */
 import { router, useFocusEffect } from "expo-router";
 import { useCallback, useState } from "react";
@@ -14,6 +18,7 @@ import { api, type EventSummary } from "@/lib/api";
 import { longDate } from "@/lib/format";
 import { absolute, ApiError } from "@/lib/http";
 import { heldTokens, LedgerError } from "@/lib/ledger";
+import { nearBadges, NearError } from "@/lib/near";
 import { column, MAX_CONTENT, radius, useTheme } from "@/lib/theme";
 import { server as currentServer } from "@/lib/server";
 import { useSettings } from "@/lib/settings";
@@ -21,7 +26,10 @@ import { useWallet } from "@/lib/wallet";
 
 interface BadgeRow {
   event: EventSummary;
+  /** The XRPL NFTokenID, or the NEAR token id ("{event}:{account}"). */
   nftokenId: string;
+  /** Whose badge it is, for the art: the XRPL address or the NEAR account. */
+  holder: string;
 }
 
 export default function Badges() {
@@ -45,21 +53,31 @@ export default function Badges() {
   const load = useCallback(async () => {
     const asked = server;
     try {
-      const [tokens, events] = await Promise.all([heldTokens(wallet.address), api.events()]);
+      const [tokens, events, onNear] = await Promise.all([
+        heldTokens(wallet.address),
+        api.events(),
+        // A NEAR read that fails must not hide the XRPL badges: show what came back.
+        nearBadges(wallet.nearAccount).catch(() => []),
+      ]);
       if (currentServer() !== asked) return; // switched while this was in flight
       const byId = new Map(events.map((e) => [e.eventId, e]));
-      const rows = tokens.flatMap((t) => {
+      const rows: BadgeRow[] = tokens.flatMap((t) => {
         const event = byId.get(t.taxon);
-        return event ? [{ event, nftokenId: t.nftokenId }] : [];
+        // A taxon shared with a NEAR event is not that event's badge.
+        return event && event.chain !== "near" ? [{ event, nftokenId: t.nftokenId, holder: wallet.address }] : [];
       });
+      for (const b of onNear) {
+        const event = byId.get(b.eventId);
+        if (event && event.chain === "near") rows.push({ event, nftokenId: b.tokenId, holder: wallet.nearAccount });
+      }
       rows.sort((a, b) => (b.event.eventDate ?? "").localeCompare(a.event.eventDate ?? ""));
       setBadges(rows);
       setError(null);
     } catch (err) {
       if (currentServer() !== asked) return;
-      setError(err instanceof ApiError || err instanceof LedgerError ? err.message : "We could not read your badges.");
+      setError(err instanceof ApiError || err instanceof LedgerError || err instanceof NearError ? err.message : "We could not read your badges.");
     }
-  }, [wallet.address, server]);
+  }, [wallet.address, wallet.nearAccount, server]);
 
   // Fresh every time the tab is opened: a badge collected a minute ago belongs here.
   useFocusEffect(
@@ -89,13 +107,13 @@ export default function Badges() {
         ItemSeparatorComponent={() => <View style={{ height: 20 }} />}
         renderItem={({ item }) => (
           <Pressable
-            onPress={() => router.push(`/badge/${item.nftokenId}`)}
+            onPress={() => router.push(`/badge/${encodeURIComponent(item.nftokenId)}`)}
             style={({ pressed }) => [styles.tile, { width: tileWidth }, pressed ? { opacity: 0.7 } : null]}
             accessibilityRole="button"
             accessibilityLabel={`The badge for ${item.event.name}`}
           >
             <Image
-              source={{ uri: absolute(api.badgeArt(item.event.eventId, wallet.address)) }}
+              source={{ uri: absolute(api.badgeArt(item.event.eventId, item.holder)) }}
               style={[styles.art, { backgroundColor: theme.surface2, borderColor: theme.rule }]}
             />
             <View style={{ gap: 2, paddingHorizontal: 2 }}>
