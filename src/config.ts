@@ -53,7 +53,7 @@ export interface NearConfig {
 }
 
 /** Free public RPC; NEAR's own rpc.*.near.org endpoints are rate-limited. Override with NEAR_RPC_URL. */
-const NEAR_RPC_DEFAULTS: Record<NearNetwork, string> = {
+export const NEAR_RPC_DEFAULTS: Record<NearNetwork, string> = {
   testnet: "https://rpc.testnet.fastnear.com",
   mainnet: "https://rpc.mainnet.fastnear.com",
 };
