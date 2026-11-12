@@ -9,6 +9,7 @@
 import type { FastifyServerOptions } from "fastify";
 import type { AppConfig } from "../config.js";
 import type {
+  NearGateway,
   AllowanceLedger,
   AllowanceResult,
   AttendanceRepository,
@@ -39,6 +40,7 @@ import { TreasuryVault } from "../treasury/vault.js";
 import type { AccountSnapshot } from "../xrpl/account.js";
 import type { PayAllowanceInput } from "../xrpl/allowance.js";
 import { createGateway } from "../xrpl/client.js";
+import { createNearGateway } from "../near/gateway.js";
 import type { PurchasePaymentCheck, PurchasePaymentInput } from "../xrpl/purchase.js";
 import type { SweepInput, SweepResult } from "../xrpl/treasury.js";
 import { NullXamanService, XummXamanService, type XamanService } from "../xaman/client.js";
@@ -236,6 +238,10 @@ export function serializeLoggedError(value: unknown, depth = 0): SerializedLogEr
  * cheap here; the expensive mistake is a missing key.
  */
 export const LOG_REDACT_PATHS: string[] = [
+  // The NEAR minter key. Same rules as the issuer seed.
+  "minterPrivateKey",
+  "*.minterPrivateKey",
+  "*.*.minterPrivateKey",
   "seed",
   "*.seed",
   "*.*.seed",
@@ -326,6 +332,11 @@ export interface RateLimitSettings {
 export interface ApiDeps {
   config: AppConfig;
   gateway: XrplGateway;
+  /**
+   * NEAR, when the operator set it up (config.near). Absent means the server
+   * is XRPL-only: a NEAR event cannot be created, and none exists to serve.
+   */
+  near?: NearGateway;
   attendance: AttendanceRepository;
   /**
    * Guards the mint. Not optional: the attendance table cannot dedupe a claim
@@ -638,6 +649,21 @@ function announceBadgeArtMode(
  * an unverified address is a claim rather than a proof, and a soulbound badge
  * minted to the wrong one cannot be moved — so no keys means no registrations.
  */
+/** Which chains this server can issue on, said once at startup. */
+function announceNearMode(config: AppConfig): void {
+  if (!config.near) {
+    console.info(
+      "[api] NEAR: not configured (NEAR_CONTRACT_ID / NEAR_MINTER_ACCOUNT_ID / NEAR_MINTER_PRIVATE_KEY " +
+        "unset). Events are XRPL only.",
+    );
+    return;
+  }
+  console.info(
+    `[api] NEAR: ${config.near.network}, contract ${config.near.contractId}, minting as ` +
+      `${config.near.minterAccountId} through ${config.near.rpcUrl}. Events can be XRPL or NEAR.`,
+  );
+}
+
 function announceSignInMode(configured: boolean): void {
   if (configured) {
     console.info(
@@ -862,9 +888,14 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
       })()
     : undefined;
 
+  // No network at construction: the first NEAR call is the first request.
+  const near = config.near ? createNearGateway(config.near) : undefined;
+  announceNearMode(config);
+
   const deps: ApiDeps = {
     config,
     gateway,
+    ...(near ? { near } : {}),
     attendance,
     claims,
     allowances,

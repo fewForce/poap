@@ -17,8 +17,10 @@
  */
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { nearRoster } from "../../near/badges.js";
+import type { EventId, NearGateway, Roster, RosterEntry } from "../../types.js";
 import type { ApiDeps } from "../deps.js";
-import { eventIdParamsSchema, type EventIdParams } from "../http-errors.js";
+import { eventIdParamsSchema, sendError, type EventIdParams } from "../http-errors.js";
 
 const rosterQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(400).optional(),
@@ -43,6 +45,14 @@ export function registerRosterRoute(app: FastifyInstance, deps: ApiDeps): void {
       const { limit } = request.query;
 
       const event = deps.events ? await deps.events.find(eventId) : null;
+      if (event?.chain === "near") {
+        if (!deps.near) {
+          return sendError(reply, 503, "SERVICE_UNAVAILABLE", "NEAR is not set up on this server.", {
+            eventId,
+          });
+        }
+        return reply.code(200).send(await nearRosterOf(deps.near, eventId, limit));
+      }
       const issuerAddress = event?.issuerAddress ?? undefined;
 
       const roster = await deps.chain.getRoster(deps.gateway, eventId, {
@@ -53,4 +63,31 @@ export function registerRosterRoute(app: FastifyInstance, deps: ApiDeps): void {
       return reply.code(200).send(roster);
     },
   );
+}
+
+/**
+ * The same shape as an XRPL roster, read from the badge contract's attendance
+ * records. Every NEAR badge was minted straight to its holder, so every entry
+ * is claimed; a burned one stays on the roster, because attendance stands.
+ */
+async function nearRosterOf(near: NearGateway, eventId: EventId, limit?: number): Promise<Roster> {
+  const records = await nearRoster(near, eventId, limit === undefined ? {} : { max: limit });
+  const entries: RosterEntry[] = records.map((r, i) => ({
+    nftokenId: r.tokenId,
+    owner: r.accountId,
+    isBurned: r.burnedAt !== null,
+    taxon: eventId,
+    serial: i + 1,
+    claimed: true,
+  }));
+  return {
+    eventId,
+    chain: "near",
+    issuer: near.contractId,
+    entries,
+    minted: entries.length,
+    claimed: entries.length,
+    burned: entries.filter((e) => e.isBurned).length,
+    ownerUnknown: 0,
+  };
 }

@@ -17,7 +17,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
 import { isXrpAmount } from "../../money.js";
-import { MAX_TAXON, type EventRecord, type EventStatus } from "../../types.js";
+import { CHAINS, MAX_TAXON, type Chain, type EventRecord, type EventStatus } from "../../types.js";
 import { allowanceOverCeiling } from "../allowance.js";
 import { requireAdmin } from "../auth.js";
 import type { ApiDeps } from "../deps.js";
@@ -67,6 +67,8 @@ export interface PublicEvent {
   venue?: string | null;
   metadataUri?: string | null;
   status: EventStatus;
+  /** Which chain the badges live on. Pages and the app branch on it. */
+  chain: Chain;
 }
 
 export function toPublicEvent(event: EventRecord): PublicEvent {
@@ -78,6 +80,7 @@ export function toPublicEvent(event: EventRecord): PublicEvent {
     venue: event.venue ?? null,
     metadataUri: event.metadataUri ?? null,
     status: event.status,
+    chain: event.chain ?? "xrpl",
   };
 }
 
@@ -147,6 +150,8 @@ const metadataUriSchema = z.string().min(1).max(256);
  * is compared against a budget. Whether an allowance is too big for this
  * server is checked in the handler, which knows the ceiling.
  */
+const chainSchema = z.enum(CHAINS as [Chain, ...Chain[]]);
+
 const xrpAmountSchema = z
   .string()
   .trim()
@@ -163,6 +168,8 @@ const createEventBodySchema = z
     metadataUri: metadataUriSchema.optional(),
     /** Defaults to draft: a new event is not public until someone opens it. */
     status: eventStatusSchema.default("draft"),
+    /** Where the badges live. Fixed from here on. Defaults to XRPL. */
+    chain: chainSchema.default("xrpl"),
     /** What each attendee may spend at the event's vendors. Defaults to none. */
     allowanceXrp: xrpAmountSchema.optional(),
     /** The most the event's treasury may pay out. Defaults to nothing. */
@@ -185,6 +192,8 @@ const updateEventBodySchema = z
     venue: venueSchema.nullable().optional(),
     metadataUri: metadataUriSchema.nullable().optional(),
     status: eventStatusSchema.optional(),
+    /** Accepted only so the same value can round-trip; a change is refused. */
+    chain: chainSchema.optional(),
     allowanceXrp: xrpAmountSchema.optional(),
     budgetXrp: xrpAmountSchema.optional(),
   })
@@ -604,6 +613,19 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
     async (request, reply) => {
       const body = request.body;
 
+      // A NEAR event this server cannot issue for would take registrations and
+      // then fail at the door.
+      if (body.chain === "near" && !deps.near) {
+        return sendError(
+          reply,
+          503,
+          "SERVICE_UNAVAILABLE",
+          "NEAR is not set up on this server (NEAR_CONTRACT_ID, NEAR_MINTER_ACCOUNT_ID, " +
+            "NEAR_MINTER_PRIVATE_KEY), so a NEAR event cannot be created.",
+          { chain: "near" },
+        );
+      }
+
       const clash = await events.find(body.eventId);
       if (clash) {
         return sendError(
@@ -641,6 +663,7 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
         eventId: body.eventId,
         name: body.name,
         status: body.status,
+        chain: body.chain,
         ...(body.description === undefined ? {} : { description: body.description }),
         ...(body.eventDate === undefined ? {} : { eventDate: body.eventDate }),
         ...(body.venue === undefined ? {} : { venue: body.venue }),
@@ -652,7 +675,8 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
       // The event's own wallet, made now so the organiser can fund it straight
       // away. Never fails the create: an event with no treasury yet still takes
       // registrations and issues badges, and the treasury is made on first use.
-      if (deps.treasuries?.configured) {
+      // A NEAR event has no XRPL treasury: there is no XRP to pay its attendees.
+      if (deps.treasuries?.configured && created.chain !== "near") {
         try {
           await deps.treasuries.ensure(created.eventId);
         } catch (err) {
@@ -710,6 +734,9 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
       if ("status" in body) patch.status = body.status;
       if (body.allowanceXrp !== undefined) patch.allowanceXrp = body.allowanceXrp;
       if (body.budgetXrp !== undefined) patch.budgetXrp = body.budgetXrp;
+      // Passed through so the repository can refuse a change by name; the same
+      // chain round-tripped by a form that posts the whole record is a no-op.
+      if (body.chain !== undefined) patch.chain = body.chain;
 
       // An allowance is paid at the moment of issue, not at the moment it is
       // saved, so raising it mid-event is allowed — but never past what this

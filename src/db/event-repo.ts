@@ -23,7 +23,9 @@
 import { NotFoundError, ValidationError, XrplLayerError } from "../errors.js";
 import { dropsToXrpString, normalizeXrp, xrpToDropsBigInt } from "../money.js";
 import {
+  CHAINS,
   MAX_TAXON,
+  type Chain,
   type EventId,
   type EventRecord,
   type EventRepository,
@@ -41,6 +43,7 @@ interface EventRow {
   venue: string | null;
   metadata_uri: string | null;
   status: string;
+  chain?: string | null;
   issuer_address?: string | null;
   /** bigint columns, cast to text so they never pass through a JS number. */
   allowance_drops?: string | null;
@@ -62,7 +65,7 @@ interface EventRow {
  */
 const COLUMNS =
   "event_id, name, description, to_char(event_date, 'YYYY-MM-DD') AS event_date, " +
-  "venue, metadata_uri, status, issuer_address, allowance_drops::text AS allowance_drops, " +
+  "venue, metadata_uri, status, chain, issuer_address, allowance_drops::text AS allowance_drops, " +
   "budget_drops::text AS budget_drops, created_at, updated_at";
 
 /** The two money fields, stored as drops and carried as decimal XRP. */
@@ -185,6 +188,7 @@ export function assertValidEvent(input: {
   name: unknown;
   status: unknown;
   eventDate?: unknown;
+  chain?: unknown;
   allowanceXrp?: string;
   budgetXrp?: string;
 }): void {
@@ -192,7 +196,65 @@ export function assertValidEvent(input: {
   assertValidEventName(input.name);
   assertValidStatus(input.status);
   assertValidEventDate(input.eventDate);
-  normalizeEventAmounts(input);
+  const amounts = normalizeEventAmounts(input);
+  const chain = input.chain ?? "xrpl";
+  if (!CHAINS.includes(chain as Chain)) {
+    throw new ValidationError("INVALID_INPUT", `chain must be one of ${CHAINS.join(", ")}.`, {
+      chain,
+    });
+  }
+  assertAmountsFitChain(chain as Chain, amounts);
+}
+
+/**
+ * Allowances and budgets are XRP paid to XRPL wallets from an XRPL treasury.
+ * A NEAR attendee has no XRPL wallet to pay, so a NEAR event carries neither.
+ */
+function assertAmountsFitChain(
+  chain: Chain,
+  amounts: { allowanceXrp?: string | undefined; budgetXrp?: string | undefined },
+): void {
+  if (chain !== "near") return;
+  for (const field of ["allowanceXrp", "budgetXrp"] as const) {
+    const value = amounts[field];
+    if (value !== undefined && xrpToDropsBigInt(value, field) !== 0n) {
+      throw new ValidationError(
+        "INVALID_INPUT",
+        `${field} is paid in XRP to XRPL wallets, and this event's badges are on NEAR. ` +
+          "Leave it at 0.",
+        { chain, [field]: value },
+      );
+    }
+  }
+}
+
+/**
+ * Refuses a patch that would move an event to another chain, or give a NEAR
+ * event an XRP allowance. Like renumbering, the round trip of an admin form
+ * posting the same chain back is harmless and passes.
+ *
+ * Shared by both implementations; it needs the current row, which the pg
+ * update reads only when the patch could trip it.
+ */
+export function assertNotRechaining(current: EventRecord, patch: UpdatablePatch): void {
+  const chain = current.chain ?? "xrpl";
+  if (patch.chain !== undefined && patch.chain !== chain) {
+    throw new ValidationError(
+      "INVALID_INPUT",
+      `Event ${current.eventId}'s badges are on ${chain === "near" ? "NEAR" : "XRPL"}, and an ` +
+        "event's chain is fixed when it is created: a badge cannot move between chains. " +
+        "Create a new event instead.",
+      { eventId: current.eventId, chain, attempted: patch.chain },
+    );
+  }
+  assertAmountsFitChain(chain, patch);
+}
+
+/** Whether a patch carries anything assertNotRechaining needs the current row for. */
+function patchTouchesChain(patch: UpdatablePatch): boolean {
+  return (
+    patch.chain !== undefined || patch.allowanceXrp !== undefined || patch.budgetXrp !== undefined
+  );
 }
 
 /** The duplicate an operator hits by reusing a taxon that is already an event. */
@@ -233,6 +295,7 @@ export function rowToEvent(row: EventRow): EventRecord {
     venue: row.venue,
     metadataUri: row.metadata_uri,
     status: row.status as EventStatus,
+    chain: (row.chain ?? "xrpl") as Chain,
     issuerAddress: row.issuer_address ?? null,
     allowanceXrp: dropsToXrpString(BigInt(row.allowance_drops ?? "0")),
     budgetXrp: dropsToXrpString(BigInt(row.budget_drops ?? "0")),
@@ -305,8 +368,8 @@ export class PgEventRepository implements EventRepository {
       const res = await this.db.query(
         `INSERT INTO events
            (event_id, name, description, event_date, venue, metadata_uri, status,
-            issuer_address, allowance_drops, budget_drops)
-         VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8, $9::bigint, $10::bigint)
+            issuer_address, allowance_drops, budget_drops, chain)
+         VALUES ($1, $2, $3, $4::date, $5, $6, $7, $8, $9::bigint, $10::bigint, $11)
          RETURNING ${COLUMNS}`,
         [
           input.eventId,
@@ -320,6 +383,7 @@ export class PgEventRepository implements EventRepository {
           // Text, not a JS number: a bigint parameter must not pass through 2^53.
           xrpToDropsBigInt(input.allowanceXrp ?? "0", "allowanceXrp").toString(),
           xrpToDropsBigInt(input.budgetXrp ?? "0", "budgetXrp").toString(),
+          input.chain ?? "xrpl",
         ],
       );
       const row = res.rows[0] as EventRow | undefined;
@@ -360,6 +424,11 @@ export class PgEventRepository implements EventRepository {
     assertValidEventId(eventId);
     assertNotRenumbering(eventId, patch);
     assertValidPatch(patch);
+    if (patchTouchesChain(patch)) {
+      const current = await this.find(eventId);
+      if (!current) throw new NotFoundError(`No event ${eventId} to update.`, { eventId });
+      assertNotRechaining(current, patch);
+    }
 
     const sets: string[] = [];
     const values: unknown[] = [eventId];

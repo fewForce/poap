@@ -8,7 +8,7 @@ import { config as loadDotenv } from "dotenv";
 import { ConfigError, NetworkGuardError } from "./errors.js";
 import { isXrpAmount, xrpToDropsBigInt } from "./money.js";
 import { decodeMasterKey } from "./treasury/seal.js";
-import type { NetworkName } from "./types.js";
+import type { NearNetwork, NetworkName } from "./types.js";
 import { badgeReadyReserveXrp } from "./xrpl/reserve.js";
 
 /**
@@ -34,6 +34,30 @@ export interface RewardConfig {
   feeBufferXrp: string;
 }
 
+/**
+ * NEAR, beside XRPL. Absent unless the operator sets it up: without it the
+ * server is XRPL-only, exactly as before, and a NEAR event cannot be created.
+ */
+export interface NearConfig {
+  network: NearNetwork;
+  rpcUrl: string;
+  /** The badge contract, contracts/near-badges. */
+  contractId: string;
+  /** Whose key mints: normally the contract's own account. */
+  minterAccountId: string;
+  /**
+   * `ed25519:<base58>`, a function-call access key limited to nft_mint.
+   * Server-side only. Never log this, never serialise it, never ship it.
+   */
+  minterPrivateKey: string;
+}
+
+/** Free public RPC; NEAR's own rpc.*.near.org endpoints are rate-limited. Override with NEAR_RPC_URL. */
+const NEAR_RPC_DEFAULTS: Record<NearNetwork, string> = {
+  testnet: "https://rpc.testnet.fastnear.com",
+  mainnet: "https://rpc.mainnet.fastnear.com",
+};
+
 export interface AppConfig {
   endpoint: string;
   fallbackEndpoints: string[];
@@ -42,6 +66,8 @@ export interface AppConfig {
   /** Server-side only. Never log this, never serialise it, never ship it. */
   issuerSeed: string;
   reward: RewardConfig;
+  /** NEAR, when the operator has set it up. See NearConfig. */
+  near?: NearConfig;
   pinata: { jwt?: string; gateway: string };
   xumm: { apiKey?: string; apiSecret?: string };
   databaseUrl?: string;
@@ -301,6 +327,7 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     issuerAddress,
     issuerSeed,
     reward: rewardConfig(),
+    ...nearConfigOrNothing(),
     pinata: { jwt: env("PINATA_JWT"), gateway: env("PINATA_GATEWAY") ?? "https://gateway.pinata.cloud" },
     xumm: { apiKey: env("XUMM_API_KEY"), apiSecret: env("XUMM_API_SECRET") },
     databaseUrl: env("DATABASE_URL"),
@@ -330,6 +357,56 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
   };
 }
 
+/**
+ * NEAR_* settings. All or none: a server with a contract and no key would
+ * accept NEAR events and then fail at the desk, so half a configuration is a
+ * startup error, not a quiet XRPL-only server.
+ */
+function nearConfigOrNothing(): { near?: NearConfig } {
+  const contractId = env("NEAR_CONTRACT_ID");
+  const minterAccountId = env("NEAR_MINTER_ACCOUNT_ID");
+  const minterPrivateKey = env("NEAR_MINTER_PRIVATE_KEY");
+  const given = { NEAR_CONTRACT_ID: contractId, NEAR_MINTER_ACCOUNT_ID: minterAccountId, NEAR_MINTER_PRIVATE_KEY: minterPrivateKey };
+  const missing = Object.entries(given).filter(([, v]) => !v).map(([k]) => k);
+  if (missing.length === 3) return {};
+  if (missing.length > 0) {
+    throw new ConfigError(`NEAR is half set up: ${missing.join(", ")} missing. Set all three, or none.`);
+  }
+
+  const networkRaw = (env("NEAR_NETWORK") ?? "testnet").toLowerCase();
+  if (networkRaw !== "testnet" && networkRaw !== "mainnet") {
+    throw new ConfigError(`NEAR_NETWORK must be testnet | mainnet, got "${networkRaw}"`);
+  }
+  const network = networkRaw as NearNetwork;
+
+  // The same guard as XRPL's: a testnet contract on a mainnet server, or the
+  // reverse, mints where nobody is looking.
+  for (const [name, id] of [
+    ["NEAR_CONTRACT_ID", contractId!],
+    ["NEAR_MINTER_ACCOUNT_ID", minterAccountId!],
+  ] as const) {
+    const testnetName = id === "testnet" || id.endsWith(".testnet");
+    if (/^[0-9a-f]{64}$/.test(id)) continue;
+    if (network === "testnet" ? !testnetName : testnetName) {
+      throw new NetworkGuardError(`${name} ${id} is not a ${network} account, and NEAR_NETWORK is ${network}.`);
+    }
+  }
+  if (!/^ed25519:[1-9A-HJ-NP-Za-km-z]{40,100}$/.test(minterPrivateKey!)) {
+    // Never echo the value.
+    throw new ConfigError("NEAR_MINTER_PRIVATE_KEY must look like ed25519:<base58>.");
+  }
+
+  return {
+    near: {
+      network,
+      rpcUrl: env("NEAR_RPC_URL") ?? NEAR_RPC_DEFAULTS[network],
+      contractId: contractId!,
+      minterAccountId: minterAccountId!,
+      minterPrivateKey: minterPrivateKey!,
+    },
+  };
+}
+
 /** Redacted view, safe to log. */
 export function describeConfig(cfg: AppConfig): Record<string, unknown> {
   return {
@@ -343,6 +420,15 @@ export function describeConfig(cfg: AppConfig): Record<string, unknown> {
       maxPerAttendeeXrp: cfg.reward.maxPerAttendeeXrp,
       feeBufferXrp: cfg.reward.feeBufferXrp,
     },
+    near: cfg.near
+      ? {
+          network: cfg.near.network,
+          rpcUrl: cfg.near.rpcUrl,
+          contractId: cfg.near.contractId,
+          minterAccountId: cfg.near.minterAccountId,
+          minterPrivateKey: "[redacted]",
+        }
+      : "[unset]",
     pinata: { jwt: cfg.pinata.jwt ? "[redacted]" : "[unset]", gateway: cfg.pinata.gateway },
     xumm: {
       apiKey: cfg.xumm.apiKey ? "[redacted]" : "[unset]",

@@ -11,7 +11,14 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { ApiDeps } from "../deps.js";
-import { addressSchema, eventIdParamsSchema, eventIdSchema, sendError, type EventIdParams } from "../http-errors.js";
+import {
+  anyChainAddressSchema,
+  eventIdParamsSchema,
+  eventIdSchema,
+  requireEventAddress,
+  sendError,
+  type EventIdParams,
+} from "../http-errors.js";
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
@@ -24,7 +31,8 @@ const attendanceQuerySchema = z.object({
 type AttendanceParams = EventIdParams;
 type AttendanceQuery = z.infer<typeof attendanceQuerySchema>;
 
-const oneAttendeeParamsSchema = z.object({ eventId: eventIdSchema, address: addressSchema });
+/** XRPL address or NEAR account id; which one is allowed depends on the event. */
+const oneAttendeeParamsSchema = z.object({ eventId: eventIdSchema, address: anyChainAddressSchema });
 type OneAttendeeParams = z.infer<typeof oneAttendeeParamsSchema>;
 
 export function registerAttendanceRoute(app: FastifyInstance, deps: ApiDeps): void {
@@ -68,6 +76,7 @@ export function registerAttendanceRoute(app: FastifyInstance, deps: ApiDeps): vo
     { schema: { params: oneAttendeeParamsSchema } },
     async (request, reply) => {
       const { eventId, address } = request.params;
+      await requireEventAddress(deps.events, eventId, address, "params");
       const record = await deps.attendance.findByEventAndAddress(eventId, address);
       if (!record) {
         return sendError(reply, 404, "NOT_FOUND", "No attendance is recorded for this wallet at this event.", {

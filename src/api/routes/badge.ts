@@ -26,7 +26,8 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { ValidationError } from "../../errors.js";
-import type { EventId } from "../../types.js";
+import type { Chain, EventId } from "../../types.js";
+import { isNearAccountId } from "../../near/account.js";
 import { assertValidAddress, assertValidTaxon } from "../../xrpl/encoding.js";
 import { renderBadgeArt } from "../../metadata/badge-art.js";
 import { artLabel } from "../../metadata/badge-uri-resolver.js";
@@ -36,14 +37,21 @@ import type { ApiDeps } from "../deps.js";
 
 const paramsSchema = z.object({
   eventId: z.coerce.number().int().min(0).max(2_147_483_647),
-  address: z.string().min(25).max(40),
+  // An XRPL address is 25–35 characters; a NEAR account id 2–64.
+  address: z.string().min(2).max(64),
 });
 
 /** Deterministic output, so it can be cached hard and forever. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
+/**
+ * By syntax only, with no lookup: an XRPL address, or a NEAR account id. Both
+ * end up in the SVG, so the NEAR rule is the protocol's own strict one —
+ * lowercase letters, digits and single - _ . separators.
+ */
 function requireValid(eventId: EventId, address: string): void {
   assertValidTaxon(eventId);
+  if (isNearAccountId(address)) return;
   assertValidAddress(address, "address");
 }
 
@@ -74,14 +82,17 @@ export interface BadgeRouteOptions {
  * unreachable must not turn the artwork into a 500, because the metadata URI is
  * immutable and a wallet that gets an error may cache it.
  */
-async function eventLabel(deps: ApiDeps, eventId: EventId): Promise<string | undefined> {
+async function eventLabel(
+  deps: ApiDeps,
+  eventId: EventId,
+): Promise<{ name: string | undefined; chain: Chain }> {
   try {
     const event = await deps.events?.find(eventId);
-    if (event?.name) return event.name;
+    if (event?.name) return { name: event.name, chain: event.chain ?? "xrpl" };
   } catch {
     // Fall through to the configured name. Nothing here is worth a 500.
   }
-  return deps.config.eventName;
+  return { name: deps.config.eventName, chain: "xrpl" };
 }
 
 export function badgeMetadataUrl(baseUrl: string, eventId: EventId, address: string): string {
@@ -106,11 +117,12 @@ export function registerBadgeRoutes(
     async (request, reply) => {
       const { eventId, address } = request.params;
       requireValid(eventId, address);
-      const name = await eventLabel(deps, eventId);
+      const { name, chain } = await eventLabel(deps, eventId);
       const { svg } = renderBadgeArt({
         address,
         eventId,
         ...(name ? { eventName: artLabel(name) } : {}),
+        ...(chain === "near" ? { chain } : {}),
       });
       return reply
         .code(200)
@@ -145,11 +157,12 @@ export function registerBadgeRoutes(
     async (request, reply) => {
       const { eventId, address } = request.params;
       requireValid(eventId, address);
-      const name = await eventLabel(deps, eventId);
+      const { name, chain } = await eventLabel(deps, eventId);
       const { svg } = renderBadgeArt({
         address,
         eventId,
         ...(name ? { eventName: artLabel(name) } : {}),
+        ...(chain === "near" ? { chain } : {}),
       });
       return reply
         .code(200)
@@ -182,19 +195,21 @@ export function registerBadgeRoutes(
         );
       }
 
-      const name = await eventLabel(deps, eventId);
+      const { name, chain } = await eventLabel(deps, eventId);
       const label = name ? artLabel(name) : `Event ${eventId}`;
       const art = renderBadgeArt({
         address,
         eventId,
         ...(name ? { eventName: label } : {}),
+        ...(chain === "near" ? { chain } : {}),
       });
       const short = `${address.slice(0, 6)}…${address.slice(-4)}`;
 
       const metadata = buildBadgeMetadata({
         name: `${label} · ${short}`,
         description:
-          `Proof of attendance for ${label}, issued on the XRP Ledger. Soulbound to ${address}; ` +
+          `Proof of attendance for ${label}, issued on ${chain === "near" ? "NEAR" : "the XRP Ledger"}. ` +
+          `Soulbound to ${address}; ` +
           "the artwork is derived from that address and can be regenerated from it.",
         imageUri: badgeImageUrl(baseUrl, eventId, address),
         eventId,

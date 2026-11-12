@@ -17,6 +17,12 @@ export interface BadgeArtInput {
   eventId: number;
   /** Short label along the bottom edge. Trimmed to fit. */
   eventName?: string;
+  /**
+   * Named under the seal. Absent is XRPL, and an XRPL badge renders exactly as
+   * it did before NEAR existed: its art is cached forever and named in minted
+   * metadata, so not one byte of it may change.
+   */
+  chain?: "xrpl" | "near";
 }
 
 /** A deterministic byte stream from the address, consumed as parameters. */
@@ -242,7 +248,7 @@ ${glyph.join("\n")}
 <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" text-anchor="middle">
   <text x="${CENTRE}" y="${CENTRE - 108}" fill="${accent}" font-size="15" letter-spacing="5" opacity=".95">${label}</text>
   <text x="${CENTRE}" y="${CENTRE + 126}" fill="#e8e2d6" font-size="19" letter-spacing="2.5">${head}…${tail}</text>
-  <text x="${CENTRE}" y="${CENTRE + 150}" fill="${accentDim}" font-size="11" letter-spacing="3.5">XRPL · EVENT ${input.eventId}</text>
+  <text x="${CENTRE}" y="${CENTRE + 150}" fill="${accentDim}" font-size="11" letter-spacing="3.5">${input.chain === "near" ? "NEAR" : "XRPL"} · EVENT ${input.eventId}</text>
 </g>
 </svg>`;
 

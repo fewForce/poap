@@ -46,6 +46,7 @@ import type {
   EventRecord,
   EventRepository,
   EventStatus,
+  NearSignedTx,
   RegistrationRecord,
   RegistrationRepository,
   SessionRecord,
@@ -54,6 +55,7 @@ import type {
 import { MemoryAllowanceLedger } from "./allowance-ledger.js";
 import { normalizePaging } from "./attendance-repo.js";
 import {
+  assertNotRechaining,
   assertNotRenumbering,
   assertValidEvent,
   assertValidEventId,
@@ -256,6 +258,7 @@ export class MemoryClaimRepository implements ClaimRepository {
       existing.record.status = "pending";
       existing.record.nftokenId = null;
       existing.record.offerId = null;
+      existing.record.nearTx = null;
       existing.record.createdAt = new Date();
       existing.record.expiresAt = input.expiresAt ?? null;
       // ---- end of critical section -----------------------------------------
@@ -272,6 +275,7 @@ export class MemoryClaimRepository implements ClaimRepository {
         address: input.address,
         nftokenId: null,
         offerId: null,
+        nearTx: null,
         status: "pending",
         createdAt: new Date(),
         expiresAt: input.expiresAt ?? null,
@@ -289,10 +293,14 @@ export class MemoryClaimRepository implements ClaimRepository {
   }
 
   /** Absent fields leave the stored value alone; neither can be cleared. */
-  async attach(id: string, patch: { nftokenId?: string; offerId?: string }): Promise<void> {
+  async attach(
+    id: string,
+    patch: { nftokenId?: string; offerId?: string; nearTx?: NearSignedTx },
+  ): Promise<void> {
     const row = this.mustFind(id, "attach");
     if (patch.nftokenId !== undefined) row.record.nftokenId = patch.nftokenId;
     if (patch.offerId !== undefined) row.record.offerId = patch.offerId;
+    if (patch.nearTx !== undefined) row.record.nearTx = { ...patch.nearTx };
   }
 
   async markClaimed(id: string): Promise<void> {
@@ -400,6 +408,7 @@ export class MemoryEventRepository implements EventRepository {
       venue: input.venue ?? null,
       metadataUri: input.metadataUri ?? null,
       status,
+      chain: input.chain ?? "xrpl",
       issuerAddress: input.issuerAddress ?? null,
       allowanceXrp: amounts.allowanceXrp,
       budgetXrp: amounts.budgetXrp,
@@ -422,6 +431,7 @@ export class MemoryEventRepository implements EventRepository {
 
     const row = this.rows.get(eventId);
     if (!row) throw new NotFoundError(`No event ${eventId} to update.`, { eventId });
+    assertNotRechaining(row, patch);
 
     // Both implementations walk EVENT_PATCH_COLUMNS, so the pg SET list and
     // this loop cannot drift: adding a field in one place adds it in both. The

@@ -23,7 +23,7 @@
  * that the sweeper can cancel to get the 0.2 XRP back.
  */
 import { NotFoundError } from "../errors.js";
-import type { ClaimRecord, ClaimRepository, ClaimStatus, EventId } from "../types.js";
+import type { ClaimRecord, ClaimRepository, ClaimStatus, EventId, NearSignedTx } from "../types.js";
 import { normalizePaging } from "./attendance-repo.js";
 import type { Queryable } from "./pool.js";
 
@@ -33,13 +33,16 @@ interface ClaimRow {
   address: string;
   nftoken_id: string | null;
   offer_id: string | null;
+  near_tx_hash: string | null;
+  near_signed_tx: string | null;
   status: string;
   created_at: Date | string;
   expires_at: Date | string | null;
 }
 
 const COLUMNS =
-  "id, event_id, address, nftoken_id, offer_id, status, created_at, expires_at";
+  "id, event_id, address, nftoken_id, offer_id, near_tx_hash, near_signed_tx, status, " +
+  "created_at, expires_at";
 
 /** Postgres unique_violation. */
 const UNIQUE_VIOLATION = "23505";
@@ -67,6 +70,10 @@ function rowToRecord(row: ClaimRow): ClaimRecord {
     address: row.address,
     nftokenId: row.nftoken_id,
     offerId: row.offer_id,
+    nearTx:
+      row.near_tx_hash && row.near_signed_tx
+        ? { hash: row.near_tx_hash, signedTx: row.near_signed_tx }
+        : null,
     status: row.status as ClaimStatus,
     createdAt: toDate(row.created_at),
     expiresAt: row.expires_at === null ? null : toDate(row.expires_at),
@@ -103,6 +110,8 @@ export class PgClaimRepository implements ClaimRepository {
                expires_at = EXCLUDED.expires_at,
                nftoken_id = NULL,
                offer_id   = NULL,
+               near_tx_hash   = NULL,
+               near_signed_tx = NULL,
                created_at = now()
            WHERE claims.status = 'abandoned'
          RETURNING ${COLUMNS}`,
@@ -132,16 +141,31 @@ export class PgClaimRepository implements ClaimRepository {
    * attaching the offer id later cannot blank the nftoken id. Neither field can
    * be cleared through here, which is deliberate — an offer id is the handle on
    * 0.2 XRP and losing it strands the reserve.
+   *
+   * A NEAR mint, by contrast, IS replaced by a newer one: a signed transaction
+   * that expired before it ran is worthless, and the one signed in its place
+   * is the one that will mint. Hash and bytes always travel together.
    */
-  async attach(id: string, patch: { nftokenId?: string; offerId?: string }): Promise<void> {
+  async attach(
+    id: string,
+    patch: { nftokenId?: string; offerId?: string; nearTx?: NearSignedTx },
+  ): Promise<void> {
     await this.mustUpdate(
       id,
       `UPDATE claims
-          SET nftoken_id = COALESCE($2, nftoken_id),
-              offer_id   = COALESCE($3, offer_id)
+          SET nftoken_id     = COALESCE($2, nftoken_id),
+              offer_id       = COALESCE($3, offer_id),
+              near_tx_hash   = COALESCE($4, near_tx_hash),
+              near_signed_tx = COALESCE($5, near_signed_tx)
         WHERE id = $1::bigint
        RETURNING id`,
-      [id, patch.nftokenId ?? null, patch.offerId ?? null],
+      [
+        id,
+        patch.nftokenId ?? null,
+        patch.offerId ?? null,
+        patch.nearTx?.hash ?? null,
+        patch.nearTx?.signedTx ?? null,
+      ],
       "attach",
     );
   }

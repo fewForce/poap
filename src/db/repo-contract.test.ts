@@ -488,6 +488,30 @@ export function runRepositoryContract(label: string, factory: ContractFactory): 
       expect(after?.status).toBe("pending");
     });
 
+    it("keeps a NEAR mint signed before it was sent, replaces it with a newer one, and clears it on reopen", async () => {
+      const { claims } = await fresh();
+      const opened = await claims.open({ eventId: EVENT_A, address: "alice.testnet" });
+      expect(opened?.nearTx ?? null).toBeNull();
+
+      await claims.attach(opened!.id, { nearTx: { hash: "HashOne", signedTx: "c2lnbmVkLW9uZQ==" } });
+      expect((await claims.find(EVENT_A, "alice.testnet"))?.nearTx).toEqual({
+        hash: "HashOne",
+        signedTx: "c2lnbmVkLW9uZQ==",
+      });
+
+      // An expired transaction is worthless; the one signed in its place wins.
+      await claims.attach(opened!.id, { nearTx: { hash: "HashTwo", signedTx: "c2lnbmVkLXR3bw==" } });
+      // And an XRPL-shaped attach leaves it alone.
+      await claims.attach(opened!.id, { nftokenId: "70011:alice.testnet" });
+      const after = await claims.find(EVENT_A, "alice.testnet");
+      expect(after?.nearTx?.hash).toBe("HashTwo");
+      expect(after?.nftokenId).toBe("70011:alice.testnet");
+
+      await claims.markAbandoned(opened!.id);
+      const reopened = await claims.open({ eventId: EVENT_A, address: "alice.testnet" });
+      expect(reopened?.nearTx ?? null).toBeNull();
+    });
+
     it("moves a claim to claimed and to abandoned", async () => {
       const { claims } = await fresh();
       const a = await claims.open({ eventId: EVENT_A, address: ALICE });
@@ -810,6 +834,49 @@ export function runRepositoryContract(label: string, factory: ContractFactory): 
       expect(page1.map((e) => e.eventId)).toEqual([10, 20]);
       expect(page2.map((e) => e.eventId)).toEqual([30]);
       expect(await events.list({ offset: 99 })).toEqual([]);
+    });
+
+    it("keeps an event's chain, and an event created without one is XRPL", async () => {
+      const { events } = await fresh();
+      await events.create(eventInput({ eventId: 501 }));
+      await events.create(eventInput({ eventId: 502, chain: "near" }));
+      expect((await events.find(501))?.chain).toBe("xrpl");
+      expect((await events.find(502))?.chain).toBe("near");
+      expect((await events.list()).map((e) => e.chain)).toEqual(["xrpl", "near"]);
+    });
+
+    it("refuses to move an event between chains, and lets the same chain round-trip", async () => {
+      const { events } = await fresh();
+      await events.create(eventInput({ eventId: 503, chain: "near" }));
+      await expect(events.update(503, { chain: "xrpl" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      const same = await events.update(503, { chain: "near", venue: "Toronto" });
+      expect(same.chain).toBe("near");
+      expect(same.venue).toBe("Toronto");
+    });
+
+    it("refuses an XRP allowance or budget on a NEAR event", async () => {
+      const { events } = await fresh();
+      await expect(events.create(eventInput({ eventId: 504, chain: "near", allowanceXrp: "1" }))).rejects.toMatchObject({
+        code: "INVALID_INPUT",
+      });
+      await events.create(eventInput({ eventId: 505, chain: "near" }));
+      await expect(events.update(505, { budgetXrp: "5" })).rejects.toMatchObject({ code: "INVALID_INPUT" });
+      // Zero is what a NEAR event has; saying so again is fine.
+      await expect(events.update(505, { allowanceXrp: "0" })).resolves.toMatchObject({ allowanceXrp: "0" });
+    });
+
+    it("registers a NEAR account proven by signature (near_signature)", async () => {
+      const { registrations, events } = await fresh();
+      await events.create(eventInput({ eventId: 506, chain: "near" }));
+      const implicit = "98793cd91a3f870fb126f66285808c7e094afcfc4eda8a970f6648cdf0dbd6de";
+      const created = await registrations.create({
+        eventId: 506,
+        address: implicit,
+        addressProof: "near_signature",
+        displayName: "Priya",
+      });
+      expect(created.addressProof).toBe("near_signature");
+      expect((await registrations.findByAddress(506, implicit))?.address).toBe(implicit);
     });
 
     it("records the minting issuer once, and leaves it alone after a rotation", async () => {

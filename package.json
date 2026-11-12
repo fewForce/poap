@@ -37,6 +37,7 @@
     "@resvg/resvg-js": "^2.6.2",
     "dotenv": "^17.2.3",
     "fastify": "^5.12.1",
+    "near-api-js": "7.3.1",
     "pg": "^8.16.3",
     "xrpl": "^5.0.0",
     "xumm-sdk": "^1.11.2",

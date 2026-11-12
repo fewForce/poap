@@ -35,7 +35,16 @@ import {
 } from "../../xaman/signin.js";
 import { isSignedByAddress, masterKeyCounts, registrationMessage } from "../../xrpl/wallet-proof.js";
 import type { ApiDeps } from "../deps.js";
-import { addressSchema, eventIdParamsSchema, sendError, type EventIdParams } from "../http-errors.js";
+import {
+  addressSchema,
+  anyChainAddressSchema,
+  eventIdParamsSchema,
+  requireAddressForChain,
+  sendError,
+  type EventIdParams,
+} from "../http-errors.js";
+import { assertNearAccountId, isImplicitAccountId } from "../../near/account.js";
+import { isSignedByImplicitAccount } from "../../near/wallet-proof.js";
 import { WalletChallenges } from "../wallet-challenge.js";
 import { toPublicEvent, type PublicEvent } from "./events.js";
 
@@ -110,16 +119,36 @@ const registerBodySchema = z.object({
   email: z.email().max(254).optional(),
 });
 
-/** The wallet-signature route names its address — and proves it, see the handler. */
-const challengeBodySchema = z.object({ address: addressSchema });
+/**
+ * The wallet-signature route names its address — and proves it, see the
+ * handler. An XRPL address, or a NEAR account id for a NEAR event.
+ */
+const challengeBodySchema = z.object({ address: anyChainAddressSchema });
 
-const walletRegisterBodySchema = z.object({
+/** The XRPL body, exactly as it always was. Re-run in full for XRPL events. */
+const xrplWalletRegisterBodySchema = z.object({
   address: addressSchema,
   /** 33 bytes: an ed25519 key (0xED…) or a compressed secp256k1 one. */
   publicKey: z.string().regex(/^[0-9A-Fa-f]{66}$/),
   /** 64 bytes for ed25519; a DER secp256k1 signature is about 71. */
   signature: z.string().regex(/^[0-9A-Fa-f]{64,200}$/),
   challenge: z.string().min(20).max(300),
+  displayName: z.string().trim().min(1).max(MAX_DISPLAY_NAME),
+  email: z.email().max(254).optional(),
+});
+
+/**
+ * Loose enough for both chains. For a NEAR implicit account the key may come
+ * bare (64 hex) or in XRPL's ED-prefixed spelling; the signature is ed25519.
+ */
+const walletRegisterBodySchema = xrplWalletRegisterBodySchema.extend({
+  address: anyChainAddressSchema,
+  publicKey: z.string().regex(/^(?:[0-9A-Fa-f]{2})?[0-9A-Fa-f]{64}$/),
+});
+
+/** A NEAR event, registered from the website by typing the account. */
+const nearRegisterBodySchema = z.object({
+  accountId: anyChainAddressSchema,
   displayName: z.string().trim().min(1).max(MAX_DISPLAY_NAME),
   email: z.email().max(254).optional(),
 });
@@ -131,6 +160,7 @@ type SignInUuidParams = z.infer<typeof signInUuidParamsSchema>;
 type RegisterBody = z.infer<typeof registerBodySchema>;
 type ChallengeBody = z.infer<typeof challengeBodySchema>;
 type WalletRegisterBody = z.infer<typeof walletRegisterBodySchema>;
+type NearRegisterBody = z.infer<typeof nearRegisterBodySchema>;
 type RegistrationIdParams = z.infer<typeof registrationIdParamsSchema>;
 
 // ---------------------------------------------------------------------------
@@ -436,8 +466,16 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
     },
     async (request, reply) => {
       const { eventId } = request.params;
-      if (!(await findRegistrableEvent(eventId))) {
+      const event = await findRegistrableEvent(eventId);
+      if (!event) {
         return sendError(reply, 404, "NOT_FOUND", `No event ${eventId} is open for registration.`, { eventId });
+      }
+      requireAddressForChain(event.chain, request.body.address, "body");
+      if (event.chain === "near") {
+        if (!deps.near) {
+          return sendError(reply, 503, "SERVICE_UNAVAILABLE", "NEAR is not set up on this server.", { eventId });
+        }
+        assertNearAccountId(request.body.address, deps.near.network);
       }
       return reply.code(201).send(challenges.issue(eventId, request.body.address));
     },
@@ -469,6 +507,26 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
       if (!event) {
         return sendError(reply, 404, "NOT_FOUND", `No event ${eventId} is open for registration.`, { eventId });
       }
+      const near = event.chain === "near";
+      if (!near) {
+        // XRPL: exactly the checks this route always made, errors included.
+        const parsed = xrplWalletRegisterBodySchema.safeParse(request.body);
+        if (!parsed.success) {
+          (parsed.error as { validationContext?: string }).validationContext = "body";
+          throw parsed.error;
+        }
+      } else if (!deps.near) {
+        return sendError(reply, 503, "SERVICE_UNAVAILABLE", "NEAR is not set up on this server.", { eventId });
+      } else if (!isImplicitAccountId(address)) {
+        return sendError(
+          reply,
+          400,
+          "INVALID_INPUT",
+          "Signing to register needs a NEAR implicit account (64 hex characters), whose id is its key. " +
+            "A named account registers on the event's web page instead.",
+          { reason: "not_implicit" },
+        );
+      }
 
       const fresh = challenges.check(challenge, eventId, address);
       if (fresh !== "ok") {
@@ -484,13 +542,18 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
       }
 
       const message = registrationMessage({ eventId, address, displayName, email: email ?? null, challenge });
-      if (!isSignedByAddress({ address, publicKey, signature, message })) {
+      const signed = near
+        ? isSignedByImplicitAccount({ accountId: address, publicKey, signature, message })
+        : isSignedByAddress({ address, publicKey, signature, message });
+      if (!signed) {
         return sendError(reply, 400, "INVALID_INPUT", "That signature is not from this wallet's key.", {
           reason: "bad_signature",
         });
       }
 
-      if (!(await masterKeyCounts(deps.gateway, address))) {
+      // NEAR: the implicit account's id is its key, checked just above. There
+      // is no master-key flag to consult.
+      if (!near && !(await masterKeyCounts(deps.gateway, address))) {
         return sendError(
           reply,
           400,
@@ -513,7 +576,7 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
         const created = await registrations.create({
           eventId,
           address,
-          addressProof: "wallet_signature",
+          addressProof: near ? "near_signature" : "wallet_signature",
           displayName,
           ...(email === undefined ? {} : { email }),
         });
@@ -526,6 +589,79 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
         // Lost a race against a concurrent registration for the same address.
         if (err instanceof XrplLayerError && err.code === "DUPLICATE_CLAIM") {
           const raced = await registrations.findByAddress(eventId, address);
+          if (raced) return already(raced);
+        }
+        throw err;
+      }
+    },
+  );
+
+  /**
+   * POST /api/events/:eventId/registrations/near — a NEAR event, from the website.
+   *
+   * The attendee types their NEAR account. Nothing proves they hold it, so the
+   * row says so (self_declared), as for a typed XRPL address. What it does
+   * check: that the account is the protocol's shape, on this server's NEAR
+   * network, and, for a named account, that it exists — a typo would otherwise
+   * be minted to, forever, at the door. Signing in with a NEAR wallet here is
+   * the follow-up (docs/near-chain.md).
+   *
+   * 201 registered | 400 not a NEAR account, or not a NEAR event | 404 no such
+   * open event | 409 already registered | 429 | 503 NEAR not set up
+   */
+  app.post<{ Params: EventIdParams; Body: NearRegisterBody }>(
+    "/api/events/:eventId/registrations/near",
+    {
+      schema: { params: eventIdParamsSchema, body: nearRegisterBodySchema },
+      config: { rateLimit: registerLimit },
+    },
+    async (request, reply) => {
+      const { eventId } = request.params;
+      const { accountId, displayName, email } = request.body;
+
+      const event = await findRegistrableEvent(eventId);
+      if (!event) {
+        return sendError(reply, 404, "NOT_FOUND", `No event ${eventId} is open for registration.`, { eventId });
+      }
+      if (event.chain !== "near") {
+        return sendError(reply, 400, "INVALID_INPUT", `Event ${eventId} is not a NEAR event.`, { eventId });
+      }
+      if (!deps.near) {
+        return sendError(reply, 503, "SERVICE_UNAVAILABLE", "NEAR is not set up on this server.", { eventId });
+      }
+      assertNearAccountId(accountId, deps.near.network);
+      if (!isImplicitAccountId(accountId) && !(await deps.near.accountExists(accountId))) {
+        return sendError(
+          reply,
+          400,
+          "INVALID_ADDRESS",
+          `There is no NEAR account called ${accountId} on ${deps.near.network}. Check the spelling.`,
+          { accountId },
+        );
+      }
+
+      const already = (existing: RegistrationRecord) =>
+        reply.code(409).send({
+          error: { code: "DUPLICATE_CLAIM", message: `${accountId} is already registered for event ${eventId}.` },
+          registration: toRegistrationView(existing, event),
+        });
+
+      const existing = await registrations.findByAddress(eventId, accountId);
+      if (existing) return already(existing);
+
+      try {
+        const created = await registrations.create({
+          eventId,
+          address: accountId,
+          addressProof: "self_declared",
+          displayName,
+          ...(email === undefined ? {} : { email }),
+        });
+        request.log.info({ eventId, address: accountId, registrationId: created.id }, "NEAR registration created");
+        return reply.code(201).send({ registration: toRegistrationView(created, event) });
+      } catch (err) {
+        if (err instanceof XrplLayerError && err.code === "DUPLICATE_CLAIM") {
+          const raced = await registrations.findByAddress(eventId, accountId);
           if (raced) return already(raced);
         }
         throw err;

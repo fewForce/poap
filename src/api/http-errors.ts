@@ -25,7 +25,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { isValidClassicAddress } from "xrpl";
 import { z, ZodError } from "zod";
 import { XrplLayerError, type ErrorCode } from "../errors.js";
-import { MAX_TAXON } from "../types.js";
+import { isNearAccountId } from "../near/account.js";
+import { MAX_TAXON, type Chain, type EventId, type EventRepository } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Shared request validation
@@ -36,6 +37,58 @@ const HEX64 = /^[0-9A-Fa-f]{64}$/;
 export const addressSchema = z
   .string()
   .refine(isValidClassicAddress, "Not a valid XRPL classic address");
+
+/**
+ * An XRPL classic address or a NEAR account id: the edge check for a route
+ * whose event, and so whose chain, is not known until the handler runs. The
+ * handler then calls requireAddressForChain, which for an XRPL event answers
+ * exactly as `addressSchema` always did.
+ */
+export const anyChainAddressSchema = z
+  .string()
+  .max(64)
+  .refine(
+    (value) => isValidClassicAddress(value) || isNearAccountId(value),
+    "Not a valid XRPL classic address or NEAR account id",
+  );
+
+/**
+ * Throws, for an event that is not on NEAR, the same 400 that `addressSchema`
+ * would have produced at the edge: same code, same message, same path. XRPL
+ * callers see no difference from before NEAR existed.
+ *
+ * For a NEAR event the syntax was already checked at the edge; the network and
+ * existence checks belong to the NEAR code, which knows the network.
+ */
+export function requireAddressForChain(
+  chain: Chain | undefined,
+  address: string,
+  location: "body" | "params" = "body",
+  field = "address",
+): void {
+  if (chain === "near" || isValidClassicAddress(address)) return;
+  const error = new ZodError([
+    { code: "custom", path: [field], message: "Not a valid XRPL classic address", input: address },
+  ]);
+  (error as { validationContext?: string }).validationContext = location;
+  throw error;
+}
+
+/**
+ * requireAddressForChain for a route that has not loaded the event. An XRPL
+ * address passes without a lookup, so XRPL requests cost nothing extra; only
+ * an address that could only be NEAR makes it ask which chain the event is on.
+ */
+export async function requireEventAddress(
+  events: Pick<EventRepository, "find"> | undefined,
+  eventId: EventId,
+  address: string,
+  location: "body" | "params" = "params",
+): Promise<void> {
+  if (isValidClassicAddress(address)) return;
+  const event = events ? await events.find(eventId) : null;
+  requireAddressForChain(event?.chain, address, location);
+}
 
 /** The event id doubles as the NFTokenTaxon; >= 2147483648 is protocol-reserved. */
 export const eventIdSchema = z.coerce.number().int().min(0).max(MAX_TAXON);
@@ -112,8 +165,11 @@ const SEED_LIKE = /\bs[1-9A-HJ-NP-Za-km-z]{25,45}\b/g;
 
 const MAX_DEPTH = 6;
 
+/** A NEAR private key, as near-api-js prints one. */
+const NEAR_KEY_LIKE = /\b(?:ed25519|secp256k1):[1-9A-HJ-NP-Za-km-z]{60,100}\b/g;
+
 export function scrubSecrets(text: string): string {
-  return text.replace(SEED_LIKE, REDACTED);
+  return text.replace(SEED_LIKE, REDACTED).replace(NEAR_KEY_LIKE, REDACTED);
 }
 
 function redactValue(value: unknown, depth: number): unknown {

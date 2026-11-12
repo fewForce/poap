@@ -583,6 +583,8 @@ describe("GET /api/events", () => {
     const [first] = res.json().events;
 
     expect(Object.keys(first).sort()).toEqual([
+      // Published deliberately: pages and the app branch on the chain.
+      "chain",
       "description",
       "eventDate",
       "eventId",

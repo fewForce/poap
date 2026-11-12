@@ -44,6 +44,7 @@ import { isValidClassicAddress } from "xrpl";
 import { z } from "zod";
 import { AllowanceDeniedError, XrplLayerError } from "../../errors.js";
 import { badgeManifestPath, loadBadgeManifest } from "../../metadata/badge-uri-resolver.js";
+import { fitsNetwork, isImplicitAccountId, isNearAccountId } from "../../near/account.js";
 import type { AttendanceRecord, ClaimRecord, EventId } from "../../types.js";
 import { assertValidTaxon } from "../../xrpl/encoding.js";
 import { isClaimOfferOpen } from "../../xrpl/offers.js";
@@ -267,6 +268,70 @@ export async function readBadgeArtLinks(
  * absolute URL built from `BADGE_BASE_URL` would point somewhere else the
  * moment a deployment sits behind a tunnel.
  */
+/**
+ * The desk's view of a scanned NEAR account, in the same shape as an XRPL
+ * one so the volunteer page reads both alike. The XRP fields are zero and the
+ * reserve questions do not arise; `chain` and `accountExists` say why.
+ */
+async function nearAttendeeView(deps: ApiDeps, eventId: EventId, scanned: string): Promise<object> {
+  const near = deps.near;
+  const valid = isNearAccountId(scanned) && (near ? fitsNetwork(scanned, near.network) : true);
+  if (!valid) {
+    return {
+      chain: "near",
+      address: scanned,
+      valid: false,
+      eventId,
+      activated: false,
+      balanceXrp: "0",
+      needsSponsorship: false,
+      reserveShortfallXrp: "0",
+      allowance: null,
+      claim: null,
+      attended: false,
+      alreadyHasBadge: false,
+      registration: null,
+      art: null,
+    };
+  }
+
+  let accountExists: boolean | null = isImplicitAccountId(scanned) ? true : null;
+  if (accountExists === null && near) {
+    try {
+      accountExists = await near.accountExists(scanned);
+    } catch {
+      // Unknown, not "no": the issue route checks again before it mints.
+      accountExists = null;
+    }
+  }
+
+  const [facts, registration] = await Promise.all([
+    readAddressFacts(deps, eventId, scanned),
+    readRegistration(deps, eventId, scanned),
+  ]);
+  const attended = facts.attendance !== null;
+  return {
+    chain: "near",
+    address: scanned,
+    valid: true,
+    eventId,
+    // "Can the badge land here": an implicit account always can, a named one
+    // if it exists.
+    activated: accountExists !== false,
+    accountExists,
+    balanceXrp: "0",
+    needsSponsorship: false,
+    reserveShortfallXrp: "0",
+    allowance: null,
+    claim: facts.claim ? { status: facts.claim.status, nftokenId: facts.claim.nftokenId ?? null, offerId: null } : null,
+    attended,
+    ...(facts.attendance ? { attendedTxHash: facts.attendance.txHash } : {}),
+    alreadyHasBadge: attended,
+    registration,
+    art: { previewUrl: badgePreviewUrl(eventId, scanned) },
+  };
+}
+
 export function badgePreviewUrl(eventId: EventId, address: string): string {
   return badgeImageUrl("", eventId, address);
 }
@@ -394,6 +459,14 @@ export function registerDeskRoutes(app: FastifyInstance, deps: ApiDeps): void {
       assertValidTaxon(eventId);
 
       const scanned = request.params.address.trim();
+
+      // A NEAR event: nothing about balances, reserves or offers applies. The
+      // badge is minted straight to the account, which only has to be a real
+      // one — an implicit account always is, a named one must exist.
+      const event = deps.events ? await deps.events.find(eventId) : null;
+      if (event?.chain === "near") {
+        return reply.code(200).send(await nearAttendeeView(deps, eventId, scanned));
+      }
 
       if (!isValidClassicAddress(scanned)) {
         return reply.code(200).send({

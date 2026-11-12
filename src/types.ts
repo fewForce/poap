@@ -1,5 +1,5 @@
 /**
- * Shared contracts for the XRPL NFT layer.
+ * Shared contracts for the badge layer: XRPL, and NEAR beside it.
  *
  * Every module in src/ depends on this file and nothing in this file depends
  * on any other module. Change it deliberately.
@@ -11,6 +11,18 @@ import type { SubmittableTransaction, Wallet } from "xrpl";
 // ---------------------------------------------------------------------------
 
 export type NetworkName = "testnet" | "devnet" | "mainnet";
+
+/**
+ * The chain an event's badges live on. Chosen when the event is created and
+ * never changed: a badge cannot move between chains. XRPL is the default and
+ * everything that existed before NEAR is XRPL. See docs/near-chain.md.
+ */
+export type Chain = "xrpl" | "near";
+
+export const CHAINS: readonly Chain[] = ["xrpl", "near"];
+
+/** NEAR has no devnet worth issuing on. */
+export type NearNetwork = "testnet" | "mainnet";
 
 /**
  * An event id doubles as the NFTokenTaxon. Values >= 2147483648 are reserved
@@ -260,6 +272,11 @@ export interface ClaimRecord {
   nftokenId?: string | null;
   /** Persisted at claim time so an abandoned offer can be found and cancelled. */
   offerId?: string | null;
+  /**
+   * NEAR only: the mint transaction, signed and saved before it was sent, so a
+   * request that died mid-flight is finished by sending the same bytes again.
+   */
+  nearTx?: NearSignedTx | null;
   status: ClaimStatus;
   createdAt: Date;
   expiresAt?: Date | null;
@@ -287,14 +304,82 @@ export interface ClaimRepository {
     expiresAt?: Date;
   }): Promise<ClaimRecord | null>;
   find(eventId: EventId, address: string): Promise<ClaimRecord | null>;
-  /** Record what the mint and the offer produced. */
-  attach(id: string, patch: { nftokenId?: string; offerId?: string }): Promise<void>;
+  /** Record what the mint and the offer produced, or the NEAR mint as signed. */
+  attach(id: string, patch: { nftokenId?: string; offerId?: string; nearTx?: NearSignedTx }): Promise<void>;
   markClaimed(id: string): Promise<void>;
   markAbandoned(id: string): Promise<void>;
   /** Pending claims past expiry whose offer still locks 0.2 XRP. */
   listExpired(now: Date, limit?: number): Promise<ClaimRecord[]>;
   /** Release the slot when the mint failed, so the attendee is not locked out. */
   delete(id: string): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+// NEAR — the badge contract and the one key that mints on it.
+// ---------------------------------------------------------------------------
+
+/**
+ * A transaction signed with the minter key and not yet known to be on chain.
+ *
+ * Kept on the claim slot BEFORE it is sent: a NEAR transaction's hash is fixed
+ * when it is signed, so a request that dies after sending can be finished by
+ * sending the same bytes again, and the attendance row always names the
+ * transaction that actually minted.
+ */
+export interface NearSignedTx {
+  /** Base58, as explorers show it. */
+  hash: string;
+  /** The borsh-encoded SignedTransaction, base64. */
+  signedTx: string;
+}
+
+export type NearTxOutcome =
+  /** Final, and every receipt succeeded. `value` is the call's JSON result. */
+  | { status: "success"; hash: string; value: unknown }
+  /** Final, and the contract refused. `error` is its panic message. */
+  | { status: "failure"; hash: string; error: string }
+  /**
+   * The network will never run it: its block hash is too old, or its nonce
+   * was overtaken. Sign again.
+   */
+  | { status: "expired"; hash: string };
+
+/**
+ * The NEAR twin of XrplGateway: everything that touches NEAR goes through one.
+ *
+ * It speaks to ONE contract, the badge contract, and signs with ONE key, a
+ * function-call access key on that contract limited to `nft_mint`. A leaked
+ * key mints badges and does nothing else; the key never leaves the server.
+ */
+export interface NearGateway {
+  readonly network: NearNetwork;
+  readonly rpcUrl: string;
+  readonly contractId: string;
+  /** The account the minter key belongs to: normally the contract's own. */
+  readonly minterAccountId: string;
+  /** A view call on the badge contract. */
+  view<T>(method: string, args: Record<string, unknown>): Promise<T>;
+  /** Whether a named account exists. Implicit accounts need not exist to hold a badge. */
+  accountExists(accountId: string): Promise<boolean>;
+  /** Sign a call on the badge contract. Nothing is sent. */
+  signCall(method: string, args: Record<string, unknown>): Promise<NearSignedTx>;
+  /**
+   * Send a signed transaction and wait until it is final. Sending the same
+   * bytes twice is safe: it is one transaction with one hash.
+   */
+  send(signed: NearSignedTx): Promise<NearTxOutcome>;
+}
+
+/** The contract's attendance record, as its `attendance` view returns it. */
+export interface NearAttendance {
+  eventId: EventId;
+  accountId: string;
+  /** `"{eventId}:{accountId}"`. */
+  tokenId: string;
+  blockHeight: number;
+  mintedAt: Date;
+  /** Set when the holder burned the badge. Attendance stands either way. */
+  burnedAt: Date | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -393,6 +478,8 @@ export interface RosterEntry {
 
 export interface Roster {
   eventId: EventId;
+  /** Present for NEAR, where `issuer` is the badge contract. Absent means XRPL. */
+  chain?: Chain;
   issuer: string;
   entries: RosterEntry[];
   minted: number;
@@ -564,6 +651,12 @@ export interface EventRecord {
   metadataUri?: string | null;
   status: EventStatus;
   /**
+   * The chain the badges live on, fixed at creation. Repositories always
+   * return it; it is optional only so a create may leave it out, and leaving
+   * it out means XRPL.
+   */
+  chain?: Chain;
+  /**
    * The account that minted this event's badges.
    *
    * Recorded on the first mint and never changed after, because it is a fact
@@ -652,14 +745,18 @@ export interface EventPhotoRepository {
  * xaman_signin and wallet_signature are both proof that the registrant holds
  * the address's key: the first through a Xaman SignIn, the second through a
  * signature over a server challenge (the POAP app, which keeps its own key).
- * self_declared is a typed address and proves nothing.
+ * near_signature is wallet_signature for a NEAR implicit account, whose id is
+ * its public key. self_declared is a typed address and proves nothing.
  */
-export type AddressProof = "xaman_signin" | "wallet_signature" | "self_declared";
+export type AddressProof = "xaman_signin" | "wallet_signature" | "near_signature" | "self_declared";
 
 export interface RegistrationRecord {
   id: string;
   eventId: EventId;
-  /** Classic address. Verified when addressProof is "xaman_signin" or "wallet_signature". */
+  /**
+   * Classic address, or a NEAR account id on a NEAR event. Verified unless
+   * addressProof is "self_declared".
+   */
   address: string;
   addressProof: AddressProof;
   displayName?: string | null;

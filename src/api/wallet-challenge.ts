@@ -42,10 +42,15 @@ export class WalletChallenges {
   }
 
   check(challenge: string, eventId: EventId, address: string): ChallengeCheck {
+    // Read from both ends: the address in the middle may itself contain dots
+    // (a NEAR account such as alice.near); the other four fields never do.
     const parts = challenge.split(".");
-    if (parts.length !== 5) return "invalid";
-    const [ev, addr, exp, , mac] = parts as [string, string, string, string, string];
-    const body = parts.slice(0, 4).join(".");
+    if (parts.length < 5) return "invalid";
+    const ev = parts[0]!;
+    const mac = parts[parts.length - 1]!;
+    const exp = parts[parts.length - 3]!;
+    const addr = parts.slice(1, -3).join(".");
+    const body = parts.slice(0, -1).join(".");
     const expected = Buffer.from(this.#mac(body));
     const given = Buffer.from(mac);
     if (given.length !== expected.length || !timingSafeEqual(given, expected)) return "invalid";

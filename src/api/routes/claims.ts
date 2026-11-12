@@ -37,13 +37,17 @@ import type { ApiDeps } from "../deps.js";
 import { adminGuard } from "./events.js";
 import {
   addressSchema,
+  anyChainAddressSchema,
   eventIdParamsSchema,
   eventIdSchema,
   offerIdSchema,
+  requireAddressForChain,
+  requireEventAddress,
   sendError,
   txHashSchema,
   type EventIdParams,
 } from "../http-errors.js";
+import { issueNearBadge } from "../../near/issue.js";
 import { CLAIM_PAYLOAD_EXPIRE_MINUTES, buildAcceptOfferTxjson } from "../../xaman/payloads.js";
 import {
   BASE_RESERVE_XRP,
@@ -82,7 +86,8 @@ const BADGE_URI_TIMEOUT_MS = 10_000;
 // ---------------------------------------------------------------------------
 
 const claimBodySchema = z.object({
-  address: addressSchema,
+  /** XRPL address, or NEAR account id for a NEAR event: the handler decides which. */
+  address: anyChainAddressSchema,
   /**
    * Where the badge metadata already lives. Byte length is enforced properly by
    * mint(); this is the cheap HTTP-edge check.
@@ -657,6 +662,46 @@ export function registerClaimRoutes(app: FastifyInstance, deps: ApiDeps): void {
       const { eventId } = request.params;
       const { address, metadataUri, badgeName, returnUrl } = request.body;
 
+      // 0. Which chain. A NEAR event is minted straight to the attendee: none
+      //    of the slot-offer-accept machinery below applies (src/near/issue.ts).
+      const event = deps.events ? await deps.events.find(eventId) : null;
+      if (event?.chain === "near") {
+        if (!deps.near) {
+          return sendError(reply, 503, "SERVICE_UNAVAILABLE", "NEAR is not set up on this server.", {
+            eventId,
+          });
+        }
+        const issued = await issueNearBadge(
+          { near: deps.near, claims: deps.claims, attendance: deps.attendance },
+          event,
+          address,
+          request.log,
+        );
+        if (issued.kind === "duplicate") {
+          return reply.code(409).send({
+            error: {
+              code: "DUPLICATE_CLAIM",
+              message: `${address} already has a badge for event ${eventId}.`,
+            },
+            record: issued.record,
+          });
+        }
+        request.log.info(
+          { eventId, address, tokenId: issued.onChain.tokenId, txHash: issued.record.txHash },
+          "NEAR badge minted",
+        );
+        return reply.code(201).send({
+          chain: "near",
+          eventId,
+          address,
+          tokenId: issued.onChain.tokenId,
+          txHash: issued.record.txHash,
+          blockHeight: issued.onChain.blockHeight,
+          record: issued.record,
+        });
+      }
+      requireAddressForChain(event?.chain, address, "body");
+
       // 1. Already attended? Attendance is one badge per address per event.
       //    Kept alongside the claim slot below: this is the check that catches
       //    an attendee who finished the flow, possibly on a previous run of
@@ -911,7 +956,9 @@ export function registerClaimRoutes(app: FastifyInstance, deps: ApiDeps): void {
     "/events/:eventId/claims/for/:address",
     {
       schema: {
-        params: z.object({ eventId: eventIdSchema, address: addressSchema }),
+        // A NEAR account is a valid question with a fixed answer: NEAR badges
+        // are minted straight to the attendee, so there is never an offer.
+        params: z.object({ eventId: eventIdSchema, address: anyChainAddressSchema }),
         // Where Xaman sends the attendee back to after they approve. Same field
         // and same validation the POST body carried, moved to the query string
         // because a GET has no body — without it a phone that leaves for Xaman
@@ -923,6 +970,7 @@ export function registerClaimRoutes(app: FastifyInstance, deps: ApiDeps): void {
     async (request, reply) => {
       const { eventId, address } = request.params;
       const { returnUrl } = request.query;
+      await requireEventAddress(deps.events, eventId, address, "params");
 
       const held = await deps.claims.find(eventId, address);
       if (!held || held.status !== "pending" || !held.offerId) {

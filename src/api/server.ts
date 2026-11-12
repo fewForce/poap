@@ -114,6 +114,19 @@ export function buildServer(deps: ApiDeps): FastifyInstance {
       // than sent as null when unset, so "no tag" and "tag 0" stay different.
       ...(deps.config.sourceTag === undefined ? {} : { sourceTag: deps.config.sourceTag }),
       xamanConfigured: Boolean(deps.config.xumm.apiKey && deps.config.xumm.apiSecret),
+      // Which chains an event here can be on. `near` carries what a page or
+      // the app needs to read badges off NEAR itself: the network, the badge
+      // contract and an RPC endpoint. The minter key is not in it.
+      chains: deps.near ? ["xrpl", "near"] : ["xrpl"],
+      ...(deps.near
+        ? {
+            near: {
+              network: deps.near.network,
+              contractId: deps.near.contractId,
+              rpcUrl: deps.near.rpcUrl,
+            },
+          }
+        : {}),
       time: new Date().toISOString(),
     }),
   );
