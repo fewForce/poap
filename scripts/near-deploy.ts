@@ -36,7 +36,7 @@
  * migration, and redeploying different code over its state could break it.
  */
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import {
   JsonRpcProvider,
@@ -212,11 +212,32 @@ async function run(): Promise<void> {
     return;
   }
 
-  // -- 5: send ----------------------------------------------------------------
-  r.step(5, "Send");
+  // -- 5: the key, on disk first ------------------------------------------------
+  // Written BEFORE the transaction that puts it on chain: if the answer is
+  // lost, or a read below fails, the key must still exist somewhere.
+  r.step(5, "Write the minting key to one 0600 file");
   const minter = KeyPair.fromRandom("ed25519");
   registerSecret(minter.toString());
+  mkdirSync(dirname(outPath), { recursive: true, mode: 0o700 });
+  const body = [
+    "# NEAR minting key for the POAP server — written by scripts/near-deploy.ts",
+    `# ${new Date().toISOString()}`,
+    "# It can call nft_mint on the contract below and nothing else, once the deploy",
+    "# transaction that adds it has run. Copy these four lines into the server's",
+    "# environment, then delete this file.",
+    `NEAR_NETWORK=${network}`,
+    `NEAR_CONTRACT_ID=${contractId}`,
+    `NEAR_MINTER_ACCOUNT_ID=${contractId}`,
+    `NEAR_MINTER_PRIVATE_KEY=${minter.toString()}`,
+    "",
+  ].join("\n");
+  writeFileSync(outPath, body, { mode: 0o600, flag: "wx" });
+  chmodSync(outPath, 0o600);
+  r.ok(`written: ${outPath}`);
+  r.info("minting key (public half)", minter.getPublicKey().toString());
 
+  // -- 6: send ----------------------------------------------------------------
+  r.step(6, "Send");
   const access = (await rpc.viewAccessKey({
     accountId: contractId as string,
     publicKey: deployerPub,
@@ -235,48 +256,37 @@ async function run(): Promise<void> {
     baseDecode(access.block_hash),
   );
   const { signedTransaction, txHash } = await new KeyPairSigner(deployer).signTransaction(tx);
-  const res = (await rpc.sendTransactionUntil(signedTransaction, "FINAL")) as unknown as {
-    status?: { Failure?: unknown } | string;
-  };
-  const failure = typeof res.status === "object" && res.status && "Failure" in res.status ? res.status.Failure : null;
   const hash = baseEncode(txHash);
   r.info("transaction", hash);
   r.link("explorer", `https://${network === "mainnet" ? "" : "testnet."}nearblocks.io/txns/${hash}`);
-  if (failure) {
-    r.fail(`The transaction failed: ${failureMessage(failure)}`);
-    r.note("Nothing was written. A failed transaction changes nothing on the account but its balance (gas).");
+  let res: { status?: { Failure?: unknown } | string };
+  try {
+    res = (await rpc.sendTransactionUntil(signedTransaction, "FINAL")) as unknown as typeof res;
+  } catch (err) {
+    r.fail(`No answer for the deploy transaction: ${(err as Error).message}`);
+    r.note(`It may still have run. Look the transaction up at the link above. If it ran, ${outPath} holds the live minting key.`);
+    r.note("If it did not, delete that file before running this script again.");
     return;
   }
-  r.ok("deployed and initialised");
+  const failure = typeof res.status === "object" && res.status && "Failure" in res.status ? res.status.Failure : null;
+  if (failure) {
+    rmSync(outPath, { force: true });
+    r.fail(`The transaction failed: ${failureMessage(failure)}`);
+    r.note(`Nothing changed on the account but its balance (gas). ${outPath} was removed: its key was never added.`);
+    return;
+  }
+  r.ok("deployed, initialised, minting key added");
 
-  // -- 6: check ---------------------------------------------------------------
-  r.step(6, "Read it back");
+  // -- 7: check ---------------------------------------------------------------
+  r.step(7, "Read it back");
   const view = <T>(method: string, args: Record<string, unknown> = {}) =>
     rpc.callFunction({ contractId: contractId as string, method, args }) as Promise<T>;
-  r.check("version answers", !!(await view<string>("version")), await view<string>("version"));
+  const version = await view<string>("version");
+  r.check("version answers", !!version, version);
   r.check("owner is as asked", (await view<string>("owner")) === ownerId, ownerId);
   r.check("the contract account mints", await view<boolean>("is_minter", { account_id: contractId }), contractId);
   r.check("not paused", !(await view<boolean>("paused")));
-
-  // -- 7: write the key ---------------------------------------------------------
-  r.step(7, "Write the minting key to one 0600 file");
-  mkdirSync(dirname(outPath), { recursive: true, mode: 0o700 });
-  const body = [
-    "# NEAR minting key for the POAP server — written by scripts/near-deploy.ts",
-    `# ${new Date().toISOString()}`,
-    "# It can call nft_mint on the contract below and nothing else.",
-    "# Copy these four lines into the server's environment, then delete this file.",
-    `NEAR_NETWORK=${network}`,
-    `NEAR_CONTRACT_ID=${contractId}`,
-    `NEAR_MINTER_ACCOUNT_ID=${contractId}`,
-    `NEAR_MINTER_PRIVATE_KEY=${minter.toString()}`,
-    "",
-  ].join("\n");
-  writeFileSync(outPath, body, { mode: 0o600, flag: "wx" });
-  chmodSync(outPath, 0o600);
-  r.ok(`written: ${outPath}`);
-  r.info("minting key (public half)", minter.getPublicKey().toString());
-  r.note("Restart the server with those lines; /health then lists near among its chains.");
+  r.note("Restart the server with the lines in that file; /health then lists near among its chains.");
 }
 
 run()

@@ -290,6 +290,16 @@ fn owner_enumeration_pages() {
 }
 
 #[test]
+fn a_start_past_the_end_is_empty_not_a_wrap() {
+    let mut c = setup();
+    mint(&mut c, 1, "alice.testnet");
+    // 2^32 truncates to 0 as a 32-bit usize; it must read as "past the end".
+    assert!(c.nft_tokens_for_owner(account("alice.testnet"), Some(U128(1u128 << 32)), None).is_empty());
+    assert!(c.nft_tokens_for_owner(account("alice.testnet"), Some(U128(u128::MAX)), None).is_empty());
+    assert!(c.event_attendees(1, Some(u64::MAX), None).is_empty());
+}
+
+#[test]
 fn event_attendees_page_in_mint_order() {
     let mut c = setup();
     for i in 0..5 {

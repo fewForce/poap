@@ -166,8 +166,10 @@ fn log_event(event: &str, owner: &AccountId, token_id: &str) {
     ));
 }
 
-fn page(from_index: Option<u64>, limit: Option<u64>) -> (usize, usize) {
-    let from = from_index.unwrap_or(0) as usize;
+/// A start past the end is an empty page, never a wrap to the start: wasm's
+/// usize is 32 bits, and a plain `as` would truncate 2^32 to 0.
+fn page(from_index: Option<u128>, limit: Option<u64>) -> (usize, usize) {
+    let from = usize::try_from(from_index.unwrap_or(0)).unwrap_or(usize::MAX);
     let limit = limit.unwrap_or(MAX_PAGE).min(MAX_PAGE) as usize;
     (from, limit)
 }
@@ -336,7 +338,7 @@ impl Contract {
         from_index: Option<U128>,
         limit: Option<u64>,
     ) -> Vec<JsonToken> {
-        let (from, limit) = page(from_index.map(|i| i.0 as u64), limit);
+        let (from, limit) = page(from_index.map(|i| i.0), limit);
         let Some(held) = self.owner_events.get(&account_id) else { return vec![] };
         held.iter()
             .skip(from)
@@ -363,7 +365,7 @@ impl Contract {
 
     /// The event's attendance records, in the order badges were minted.
     pub fn event_attendees(&self, event_id: EventId, from_index: Option<u64>, limit: Option<u64>) -> Vec<Attendance> {
-        let (from, limit) = page(from_index, limit);
+        let (from, limit) = page(from_index.map(u128::from), limit);
         let Some(list) = self.event_attendees.get(&event_id) else { return vec![] };
         list.iter()
             .skip(from)
