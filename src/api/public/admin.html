@@ -800,8 +800,8 @@ a{color:var(--jade)}
       <div>
         <h1 class="head__t" tabindex="-1" id="events-h">Events</h1>
         <p class="head__s">Every event on this deployment, drafts included. The number in the left
-          column is the event id &mdash; which is also the <b>NFTokenTaxon</b> every badge for that
-          event is minted under.</p>
+          column is the event id &mdash; on the XRP Ledger the <b>NFTokenTaxon</b> every badge for
+          that event is minted under, on NEAR the event&rsquo;s number on the badge contract.</p>
       </div>
       <div class="head__act">
         <button class="btn btn--ghost" id="btn-events-refresh" type="button">Refresh</button>
@@ -1089,10 +1089,31 @@ a{color:var(--jade)}
       <div class="card__body">
         <form class="form" id="event-form" novalidate>
 
+          <div class="field" id="f-chain">
+            <span class="field__lbl" id="chain-lbl">Chain</span>
+            <!-- Two choices, both visible, like Status below. The chain is
+                 fixed once the event exists: a badge cannot move between
+                 chains. The hidden <select> carries the value. -->
+            <div class="choices" role="radiogroup" aria-labelledby="chain-lbl" id="chain-choices">
+              <button class="choice" type="button" role="radio" data-v="xrpl" aria-checked="true">XRP Ledger</button>
+              <button class="choice" type="button" role="radio" data-v="near" aria-checked="false">NEAR</button>
+            </div>
+            <select class="in" id="in-chain" name="chain" hidden aria-hidden="true" tabindex="-1">
+              <option value="xrpl">xrpl</option>
+              <option value="near">near</option>
+            </select>
+            <div class="taxon__fixed" id="chain-fixed" hidden>
+              <span id="chain-fixed-v">&mdash;</span>
+              <span class="taxon__lock">permanent</span>
+            </div>
+            <p class="help" id="chain-help"></p>
+            <div class="bad" id="e-chain" hidden></div>
+          </div>
+
           <div class="taxon">
             <div class="taxon__hd">
               <span class="label">Event id</span>
-              <span class="label" style="color:var(--ink-3)">= NFTokenTaxon</span>
+              <span class="label" style="color:var(--ink-3)" id="taxon-meaning">= NFTokenTaxon</span>
             </div>
 
             <div class="field" id="f-eventId">
@@ -1106,17 +1127,32 @@ a{color:var(--jade)}
               <div class="bad" id="e-eventId" hidden></div>
             </div>
 
-            <p style="margin-top:10px">
-              This integer <b>is</b> the <b>NFTokenTaxon</b> stamped into every badge minted for this
-              event. It is written by <code class="mono">NFTokenMint</code> into the token itself and
-              <b>cannot be changed afterwards</b> &mdash; not by editing this row, not by anything.
-            </p>
-            <p>
-              <b>Do not reuse a number.</b> Two events sharing a taxon become one on-chain collection:
-              <code class="mono">nfts_by_issuer?taxon=N</code> returns both events&rsquo; badges mixed
-              together, and verification cannot tell them apart. The server refuses a duplicate with a
-              409 for exactly this reason.
-            </p>
+            <div id="taxon-xrpl">
+              <p style="margin-top:10px">
+                This integer <b>is</b> the <b>NFTokenTaxon</b> stamped into every badge minted for this
+                event. It is written by <code class="mono">NFTokenMint</code> into the token itself and
+                <b>cannot be changed afterwards</b> &mdash; not by editing this row, not by anything.
+              </p>
+              <p>
+                <b>Do not reuse a number.</b> Two events sharing a taxon become one on-chain collection:
+                <code class="mono">nfts_by_issuer?taxon=N</code> returns both events&rsquo; badges mixed
+                together, and verification cannot tell them apart. The server refuses a duplicate with a
+                409 for exactly this reason.
+              </p>
+            </div>
+            <div id="taxon-near" hidden>
+              <p style="margin-top:10px">
+                This integer <b>is</b> the event&rsquo;s number on the <b>NEAR badge contract</b>. Every
+                badge for this event carries it in its token id (<code class="mono">event:account</code>)
+                and in the contract&rsquo;s attendance record, so it <b>cannot be changed afterwards</b>.
+              </p>
+              <p>
+                <b>Do not reuse a number.</b> The contract keeps one record per event and account: two
+                events sharing a number share one attendee list, and an attendee of the first could never
+                get a badge for the second. The server refuses a duplicate with a 409 for exactly this
+                reason.
+              </p>
+            </div>
             <p id="taxon-range">Any whole number from 0 to 2147483647. Pick one you can read out loud &mdash;
               it appears in the public URL and in every roster query.</p>
           </div>
@@ -1160,7 +1196,7 @@ a{color:var(--jade)}
             <div class="bad" id="e-metadataUri" hidden></div>
           </div>
 
-          <div class="row2">
+          <div class="row2" id="xrp-money">
             <div class="field" id="f-allowanceXrp">
               <label for="in-allowanceXrp">Allowance per attendee (XRP)</label>
               <input class="in" id="in-allowanceXrp" name="allowanceXrp" type="text" inputmode="decimal"
@@ -1224,7 +1260,7 @@ a{color:var(--jade)}
         <div style="display:flex; gap:9px; align-items:center; flex-wrap:wrap; margin-top:8px">
           <span id="detail-status"></span>
           <span class="taxonno" id="detail-taxon">&mdash;</span>
-          <span class="label">taxon</span>
+          <span class="label" id="detail-taxon-k">taxon</span>
         </div>
       </div>
       <div class="head__act">
@@ -1280,7 +1316,7 @@ a{color:var(--jade)}
         <section class="book book--chain" aria-labelledby="chain-t">
           <div class="book__hd">
             <span class="label" id="chain-t">The chain</span>
-            <span class="book__note">what actually exists on XRPL</span>
+            <span class="book__note" id="chain-note">what actually exists on XRPL</span>
           </div>
           <div class="counts">
             <div class="count"><div class="count__n" id="c-minted">&mdash;</div><div class="count__k">minted</div></div>
@@ -1606,6 +1642,9 @@ a{color:var(--jade)}
       .then(function (h) {
         health = (h && typeof h === "object") ? h : null;
         if (!health) return;
+        // Whether the NEAR choice is offered depends on this; repaint if the
+        // form is already open.
+        paintChain();
         if (typeof health.issuer === "string") {
           setText("rail-issuer", health.issuer);
           setText("set-issuer", health.issuer);
@@ -2098,7 +2137,7 @@ a{color:var(--jade)}
 
     var tdId = node("td", "taxoncell");
     tdId.appendChild(node("span", "taxonno", String(ev.eventId)));
-    tdId.appendChild(node("span", "taxonk", "NFTokenTaxon"));
+    tdId.appendChild(node("span", "taxonk", ev.chain === "near" ? "NEAR" : "NFTokenTaxon"));
     tr.appendChild(tdId);
 
     var tdName = node("td", "td-name");
@@ -2239,7 +2278,47 @@ a{color:var(--jade)}
   var formMode = "create";   // "create" | "edit"
   var formEvent = null;
 
-  var FIELDS = ["eventId", "name", "description", "eventDate", "venue", "metadataUri", "allowanceXrp", "budgetXrp", "status"];
+  var FIELDS = ["eventId", "chain", "name", "description", "eventDate", "venue", "metadataUri", "allowanceXrp", "budgetXrp", "status"];
+
+  var CHAIN_NAME = { xrpl: "XRP Ledger", near: "NEAR" };
+  var CHAIN_HELP = {
+    xrpl: "Badges are XRPL NFTs, minted by this server's issuer and accepted by each attendee in Xaman. Fixed once the event is created.",
+    near: "Badges are minted on this server's NEAR badge contract straight to each attendee's NEAR account: no accepting, no fees for them. XRP allowances do not apply. Fixed once the event is created."
+  };
+
+  /** Whether this server can issue on NEAR, from /health. Unknown counts as yes; the server refuses if not. */
+  function nearAvailable() {
+    return !health || !health.chains || health.chains.indexOf("near") !== -1;
+  }
+
+  function paintChain() {
+    var v = $("in-chain").value;
+    var cs = document.querySelectorAll("#chain-choices .choice");
+    for (var i = 0; i < cs.length; i++) {
+      var c = cs[i];
+      var cv = c.getAttribute("data-v");
+      c.setAttribute("aria-checked", cv === v ? "true" : "false");
+      if (cv === "near") {
+        c.disabled = !nearAvailable();
+        c.title = c.disabled ? "NEAR is not set up on this server." : "";
+      }
+    }
+    var help = CHAIN_HELP[v] || "";
+    if (!nearAvailable() && formMode === "create") help += " NEAR is not set up on this server, so new events are XRPL.";
+    setText("chain-help", help);
+    setText("taxon-meaning", v === "near" ? "= event id on the NEAR contract" : "= NFTokenTaxon");
+    $("taxon-xrpl").hidden = v === "near";
+    $("taxon-near").hidden = v !== "near";
+    // XRP paid to XRPL wallets: nothing a NEAR attendee has.
+    show($("xrp-money"), v !== "near");
+  }
+
+  function setChain(v) {
+    if (formMode !== "create") return;
+    if (v === "near" && !nearAvailable()) return;
+    $("in-chain").value = v;
+    paintChain();
+  }
 
   function clearFieldErrors() {
     for (var i = 0; i < FIELDS.length; i++) {
@@ -2288,6 +2367,12 @@ a{color:var(--jade)}
     show($("in-eventId"), !editing);
     show($("eventId-fixed"), Boolean(editing));
     show($("taxon-range"), !editing);
+    // The chain, likewise: chosen on create, printed on edit.
+    $("in-chain").value = editing ? (ev.chain || "xrpl") : "xrpl";
+    show($("chain-choices"), !editing);
+    show($("chain-fixed"), Boolean(editing));
+    setText("chain-fixed-v", CHAIN_NAME[$("in-chain").value] || "XRP Ledger");
+    paintChain();
     if (editing) {
       setText("eventId-fixed-v", String(ev.eventId));
       setText("form-crumb", "Edit " + ev.name);
@@ -2360,7 +2445,9 @@ a{color:var(--jade)}
     if (formMode === "create") {
       var idRaw = trimmed("in-eventId");
       if (!/^\d+$/.test(idRaw)) {
-        fieldError("eventId", "A whole number, digits only. This becomes the NFTokenTaxon.");
+        fieldError("eventId", $("in-chain").value === "near"
+          ? "A whole number, digits only. This becomes the event's number on the NEAR contract."
+          : "A whole number, digits only. This becomes the NFTokenTaxon.");
         $("in-eventId").focus();
         return;
       }
@@ -2372,9 +2459,11 @@ a{color:var(--jade)}
       }
       if (!name) { fieldError("name", "A name is required."); $("in-name").focus(); return; }
 
+      var chain = $("in-chain").value === "near" ? "near" : "xrpl";
+      if (chain === "near") { allowanceXrp = ""; budgetXrp = ""; }
       if (!amountsOk(allowanceXrp, budgetXrp)) return;
 
-      body = { eventId: idNum, name: name, status: status };
+      body = { eventId: idNum, name: name, status: status, chain: chain };
       if (description) body.description = description;
       if (eventDate) body.eventDate = eventDate;
       if (venue) body.venue = venue;
@@ -2428,7 +2517,8 @@ a{color:var(--jade)}
         pendingReceipt = {
           tone: "ok",
           code: r.status === 201 ? "201 created" : "200 saved",
-          message: (r.status === 201 ? "Created " : "Saved ") + saved.name + " — taxon " + saved.eventId + ", status " + saved.status + ".",
+          message: (r.status === 201 ? "Created " : "Saved ") + saved.name +
+            (saved.chain === "near" ? " — NEAR event " : " — taxon ") + saved.eventId + ", status " + saved.status + ".",
           sub: method + " " + path + " succeeded. " + (saved.status === "draft"
             ? "It is a draft, so the public registration page still 404s."
             : "The public registration page is live at /register/" + saved.eventId + ".")
@@ -2576,9 +2666,13 @@ a{color:var(--jade)}
       current = ev;
       paintRail();
       paintDetailHead(ev);
-      loadTreasury();
-      loadAllowances(0);
-      loadVendors();
+      // Treasury, allowances and vendors move XRP between XRPL wallets: a
+      // NEAR event has none of them, and its sections are hidden.
+      if (ev.chain !== "near") {
+        loadTreasury();
+        loadAllowances(0);
+        loadVendors();
+      }
       loadPhotos();
       loadRegs(0);
       loadInvitees();
@@ -2820,6 +2914,27 @@ a{color:var(--jade)}
     });
   }
 
+  /**
+   * What differs on an event page between the chains. The XRP sections
+   * (treasury, vendors) go for a NEAR event, and the remaining cards are
+   * numbered again so the sequence has no gap.
+   */
+  function paintChainSections(ev) {
+    var near = ev.chain === "near";
+    setText("detail-taxon-k", near ? "event" : "taxon");
+    setText("chain-note", near ? "what the NEAR contract holds" : "what actually exists on XRPL");
+    setText("btn-chain", near ? "Re-read the contract" : "Re-read the ledger");
+    show($("treasury-card"), !near);
+    show($("vendors-card"), !near);
+    var ns = document.querySelectorAll("#detail-body .card__n");
+    var n = 2;
+    for (var i = 0; i < ns.length; i++) {
+      var card = ns[i].closest(".card");
+      if (card && card.hidden) continue;
+      ns[i].textContent = String(n++);
+    }
+  }
+
   function paintDetailHead(ev) {
     current = current || ev;
     setText("detail-h", ev.name);
@@ -2834,6 +2949,11 @@ a{color:var(--jade)}
       st.appendChild(document.createTextNode(" "));
       st.appendChild(node("span", "tag-hidden", "Not public"));
     }
+    // Which chain, on every event page: it decides how the desk issues and
+    // where the badges are, and it never changes.
+    st.appendChild(document.createTextNode(" "));
+    st.appendChild(node("span", "tag-hidden", "on " + (CHAIN_NAME[ev.chain] || "XRP Ledger")));
+    paintChainSections(ev);
 
     var url = location.origin + "/register/" + ev.eventId;
     setText("share-url", url);
@@ -2851,7 +2971,11 @@ a{color:var(--jade)}
 
     var kvBox = $("detail-kv");
     clear(kvBox);
-    kvBox.appendChild(kvRow("event id", String(ev.eventId), { copy: true, note: "= NFTokenTaxon, permanent" }));
+    kvBox.appendChild(kvRow("event id", String(ev.eventId), {
+      copy: true,
+      note: ev.chain === "near" ? "= event on the NEAR contract, permanent" : "= NFTokenTaxon, permanent"
+    }));
+    kvBox.appendChild(kvRow("chain", ev.chain === "near" ? "NEAR" : "XRP Ledger", {}));
     kvBox.appendChild(kvRow("status", ev.status, {}));
     kvBox.appendChild(kvRow("date", ev.eventDate ? fmtDay(ev.eventDate) : "", {}));
     kvBox.appendChild(kvRow("venue", ev.venue || "", {}));
@@ -3109,6 +3233,14 @@ a{color:var(--jade)}
          with hundreds of badges is only ever explained by which account the
          question went to. */
       var issuer = String(r.json.issuer || "");
+      if (r.json.chain === "near" || current.chain === "near") {
+        ftOk.appendChild(document.createTextNode(
+          "This is the attendance list of event " + current.eventId + " on the badge contract " +
+          (issuer || "") + " — what NEAR holds, not what the database was told. " +
+          (r.json.burned ? r.json.burned + " burned badge" + (r.json.burned === 1 ? " still counts" : "s still count") + " as attendance. " : "") +
+          "Somebody can register and never collect a badge."));
+        return;
+      }
       ftOk.appendChild(document.createTextNode(
         "This is nfts_by_issuer over taxon " + current.eventId + ", asked of " +
         (issuer ? issuer.slice(0, 6) + "…" + issuer.slice(-4) : "the configured issuer") +
@@ -4854,6 +4986,12 @@ a{color:var(--jade)}
     $("btn-orders-prev").addEventListener("click", function () { loadOrders(Math.max(0, sales.offset - ORDER_PAGE)); });
     $("btn-orders-next").addEventListener("click", function () { loadOrders(sales.offset + ORDER_PAGE); });
     $("btn-sales-refresh").addEventListener("click", function () { loadSales(); loadOrders(sales.offset); });
+    var chainChoices = document.querySelectorAll("#chain-choices .choice");
+    for (var hi = 0; hi < chainChoices.length; hi++) {
+      (function (c) {
+        c.addEventListener("click", function () { setChain(c.getAttribute("data-v")); });
+      })(chainChoices[hi]);
+    }
     var choices = document.querySelectorAll("#status-choices .choice");
     for (var ci = 0; ci < choices.length; ci++) {
       (function (c) {
