@@ -7,7 +7,8 @@
  * second send returns the first outcome, as NEAR does for the same hash.
  *
  * What a test needs to steer is queued: `failNextSend("Minting is paused")`,
- * `expireNextSend()`, `throwOnNextSend()`. Nothing here touches the network.
+ * `expireNextSend()`, `throwOnNextSend()`, `failNextSign()`. Nothing here
+ * touches the network.
  */
 import type { NearGateway, NearNetwork, NearSignedTx, NearTxOutcome } from "../../src/types.js";
 
@@ -41,6 +42,7 @@ export class MockNearGateway implements NearGateway {
 
   #nonce = 0;
   #steps: SendStep[] = [];
+  #signFailures: string[] = [];
   #ran = new Map<string, NearTxOutcome>();
 
   constructor(opts: { network?: NearNetwork; contractId?: string } = {}) {
@@ -55,6 +57,11 @@ export class MockNearGateway implements NearGateway {
 
   expireNextSend(): void {
     this.#steps.push({ kind: "expired" });
+  }
+
+  /** The next signCall throws before anything is signed: the node is down, say. */
+  failNextSign(error = "fetch failed"): void {
+    this.#signFailures.push(error);
   }
 
   throwOnNextSend(error = "socket hang up"): void {
@@ -98,6 +105,8 @@ export class MockNearGateway implements NearGateway {
   }
 
   async signCall(method: string, args: Record<string, unknown>): Promise<NearSignedTx> {
+    const failure = this.#signFailures.shift();
+    if (failure) throw new Error(failure);
     const nonce = ++this.#nonce;
     const hash = `MockTx${nonce}${"x".repeat(38)}`.slice(0, 44);
     this.signed.push({ method, args, hash });

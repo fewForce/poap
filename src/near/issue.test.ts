@@ -102,10 +102,33 @@ describe("issueNearBadge", () => {
     expect(await deps.attendance.findByEventAndAddress(70011, "alice.testnet")).toBeNull();
   });
 
-  it("will not index a badge some other process minted", async () => {
+  it("indexes a badge that exists by the time an expired mint is signed again", async () => {
+    // The saved transaction expired; meanwhile the record appeared (this slot's
+    // own lost mint, or another process). The re-signed mint is answered with
+    // already: true, and the record is indexed rather than left stuck.
     near.mintedElsewhere(70011, "alice.testnet");
     near.expireNextSend();
-    expect(await codeOf(issueNearBadge(deps, EVENT, "alice.testnet"))).toBe("CONFLICT");
+    const result = await issueNearBadge(deps, EVENT, "alice.testnet");
+    expect(result.kind).toBe("issued");
+    if (result.kind === "issued") expect(result.record.txHash).toBe(near.signed[1]!.hash);
+    expect((await deps.claims.find(70011, "alice.testnet"))?.status).toBe("claimed");
+  });
+
+  it("frees the slot when signing fails before anything is sent", async () => {
+    near.failNextSign("fetch failed");
+    expect(await codeOf(issueNearBadge(deps, EVENT, "alice.testnet"))).toMatch(/fetch failed/);
+    expect(await deps.claims.find(70011, "alice.testnet")).toBeNull();
+    // The next scan starts clean instead of hearing "being issued" for ever.
+    const retry = await issueNearBadge(deps, EVENT, "alice.testnet");
+    expect(retry.kind).toBe("issued");
+  });
+
+  it("cuts an event title to the contract's 200 bytes, never inside a character", async () => {
+    const long = { ...EVENT, name: "会".repeat(120) }; // 360 bytes
+    await issueNearBadge(deps, long, "alice.testnet");
+    const sent = String(near.signed[0]!.args.event_title);
+    expect(Buffer.byteLength(sent, "utf8")).toBeLessThanOrEqual(200);
+    expect(sent).toBe("会".repeat(66));
   });
 
   it("tells a second desk that the first is still issuing", async () => {

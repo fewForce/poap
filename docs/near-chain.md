@@ -89,14 +89,24 @@ So for a NEAR event:
 1. The claim slot is opened, as for XRPL. A second desk issuing the same person
    at the same moment gets 409 `CONFLICT`.
 2. The `nft_mint` transaction is signed, and the signed bytes and hash are saved
-   on the claim (`near_tx_hash`, `near_signed_tx`) **before** they are sent.
-3. Mints go out one at a time, so the minter key's nonces stay in order.
+   on the claim (`near_tx_hash`, `near_signed_tx`) **before** they are sent. If
+   signing or saving fails, nothing was sent, and the slot is freed so the next
+   scan starts clean.
+3. Mints go out one at a time, so the minter key's nonces stay in order. Every
+   RPC call has a time limit (30 s for the send, 10 s for reads) and few
+   retries, so one slow node cannot hold every desk.
 4. The server waits for `FINAL`. If the answer is lost, a retry sends the same
    saved bytes: NEAR runs a transaction once, so the retry returns the first
-   outcome. If the saved transaction expired without running, the server reads
-   the contract's record, and signs again only if there is none.
+   outcome. If the saved transaction can never run (expired, or its nonce was
+   used), it is signed again and sent. Should the badge exist by then — this
+   slot's own earlier mint, or one from elsewhere — the contract answers
+   `already: true` with its record, and that record is indexed under the
+   transaction that returned it.
 5. If the contract refuses (paused, out of storage), the slot is freed and the
    desk is told why. Nothing is recorded.
+6. An event name longer than the contract's 200 bytes (long names in Chinese,
+   say, or heavy with accents) is cut to 200 bytes, on a character boundary, for
+   the on-chain title.
 
 ### 3. Who an attendee is on NEAR
 

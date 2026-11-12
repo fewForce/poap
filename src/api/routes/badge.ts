@@ -37,21 +37,34 @@ import type { ApiDeps } from "../deps.js";
 
 const paramsSchema = z.object({
   eventId: z.coerce.number().int().min(0).max(2_147_483_647),
-  // An XRPL address is 25–35 characters; a NEAR account id 2–64.
+  // An XRPL address is 25–35 characters; a NEAR account id 2–64. An XRPL
+  // event re-checks with the old limits below.
   address: z.string().min(2).max(64),
 });
+
+/** The address rule before NEAR, re-applied for every event that is not on NEAR. */
+const xrplAddressParam = z.object({ address: z.string().min(25).max(40) });
 
 /** Deterministic output, so it can be cached hard and forever. */
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
 /**
- * By syntax only, with no lookup: an XRPL address, or a NEAR account id. Both
- * end up in the SVG, so the NEAR rule is the protocol's own strict one —
- * lowercase letters, digits and single - _ . separators.
+ * A NEAR account id for a NEAR event, an XRPL address for any other — checked
+ * for an XRPL event exactly as before NEAR, length limits and all. Both end up
+ * in the SVG, so the NEAR rule is the protocol's own strict one: lowercase
+ * letters, digits and single - _ . separators.
  */
-function requireValid(eventId: EventId, address: string): void {
+function requireValid(eventId: EventId, address: string, chain: Chain): void {
+  if (chain === "near" && isNearAccountId(address)) {
+    assertValidTaxon(eventId);
+    return;
+  }
+  const old = xrplAddressParam.safeParse({ address });
+  if (!old.success) {
+    (old.error as { validationContext?: string }).validationContext = "params";
+    throw old.error;
+  }
   assertValidTaxon(eventId);
-  if (isNearAccountId(address)) return;
   assertValidAddress(address, "address");
 }
 
@@ -116,8 +129,8 @@ export function registerBadgeRoutes(
     { schema: { params: paramsSchema } },
     async (request, reply) => {
       const { eventId, address } = request.params;
-      requireValid(eventId, address);
       const { name, chain } = await eventLabel(deps, eventId);
+      requireValid(eventId, address, chain);
       const { svg } = renderBadgeArt({
         address,
         eventId,
@@ -156,8 +169,8 @@ export function registerBadgeRoutes(
     { schema: { params: paramsSchema } },
     async (request, reply) => {
       const { eventId, address } = request.params;
-      requireValid(eventId, address);
       const { name, chain } = await eventLabel(deps, eventId);
+      requireValid(eventId, address, chain);
       const { svg } = renderBadgeArt({
         address,
         eventId,
@@ -184,7 +197,8 @@ export function registerBadgeRoutes(
     { schema: { params: paramsSchema } },
     async (request, reply) => {
       const { eventId, address } = request.params;
-      requireValid(eventId, address);
+      const { name, chain } = await eventLabel(deps, eventId);
+      requireValid(eventId, address, chain);
 
       if (!baseUrl) {
         // Without an origin the `image` field would be relative, which no
@@ -195,7 +209,6 @@ export function registerBadgeRoutes(
         );
       }
 
-      const { name, chain } = await eventLabel(deps, eventId);
       const label = name ? artLabel(name) : `Event ${eventId}`;
       const art = renderBadgeArt({
         address,

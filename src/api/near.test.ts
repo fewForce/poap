@@ -7,7 +7,7 @@
  * NEAR account for a NEAR event and nothing changes for an XRPL one.
  */
 import Fastify from "fastify";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ZodType } from "zod";
 import { ed25519Wallet } from "../../test/helpers/ed25519-wallet.js";
 import { MockGateway } from "../../test/helpers/mock-gateway.js";
@@ -26,7 +26,7 @@ import { registerErrorHandler } from "./http-errors.js";
 import { registerDeskRoutes } from "./routes/desk.js";
 import { registerInviteeRoutes } from "./routes/invitees.js";
 import { registerEventRoutes } from "./routes/events.js";
-import { buildServer } from "./server.js";
+import { buildServer, publicRpcUrl } from "./server.js";
 
 const ISSUER = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh";
 const XRPL_ATTENDEE = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe";
@@ -416,6 +416,48 @@ describe("the volunteer app's new wallet on a NEAR event", () => {
   });
 });
 
+describe("XRPL events answer exactly as before NEAR", () => {
+  const validationIssues = (body: { error: { details?: { issues?: Array<{ path: string; message: string }> } } }) =>
+    body.error.details?.issues ?? [];
+
+  it("gives garbage the old message, once", async () => {
+    const res = await server().inject({ method: "POST", url: `/events/${XRPL_EVENT}/claims`, payload: { address: "Hello!" } });
+    expect(res.statusCode).toBe(400);
+    expect(validationIssues(res.json())).toEqual([{ path: "address", message: "Not a valid XRPL classic address" }]);
+  });
+
+  it("refuses a NEAR-shaped address before the desk guard runs", async () => {
+    const requireAdmin = vi.fn(() => undefined);
+    const app = buildServer({ ...deps(), requireAdmin });
+    const res = await app.inject({ method: "POST", url: `/events/${XRPL_EVENT}/claims`, payload: { address: "hello" } });
+    expect(res.statusCode).toBe(400);
+    expect(validationIssues(res.json())).toEqual([{ path: "address", message: "Not a valid XRPL classic address" }]);
+    expect(requireAdmin).not.toHaveBeenCalled();
+  });
+
+  it("reports every bad field of /verify, as it did", async () => {
+    const res = await server().inject({ method: "GET", url: `/verify?address=Hello!&eventId=${XRPL_EVENT}&txHash=zz` });
+    expect(res.statusCode).toBe(400);
+    expect(validationIssues(res.json()).map((i) => i.path).sort()).toEqual(["address", "txHash"]);
+  });
+
+  it("draws no art for a NEAR-shaped address on an XRPL event", async () => {
+    const res = await server().inject({ method: "GET", url: `/badge/${XRPL_EVENT}/hello.png` });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("still draws a NEAR event's art for a NEAR account", async () => {
+    const res = await server().inject({ method: "GET", url: `/badge/${NEAR_EVENT}/alice.testnet.png` });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("answers a NEAR /verify for an account from the other network with a 400, not a 502", async () => {
+    const res = await server().inject({ method: "GET", url: `/verify?address=alice.near&eventId=${NEAR_EVENT}` });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("INVALID_ADDRESS");
+  });
+});
+
 describe("health", () => {
   it("says which chains this server serves, and never the key", async () => {
     const res = await server().inject({ method: "GET", url: "/health" });
@@ -424,6 +466,12 @@ describe("health", () => {
       near: { network: "testnet", contractId: near.contractId },
     });
     expect(JSON.stringify(res.json())).not.toMatch(/ed25519:/);
+  });
+
+  it("never publishes an RPC URL that carries a key", () => {
+    expect(publicRpcUrl("testnet", "https://rpc.example.com/?apiKey=secret")).toBe("https://rpc.testnet.fastnear.com");
+    expect(publicRpcUrl("mainnet", "https://user:pw@rpc.example.com")).toBe("https://rpc.mainnet.fastnear.com");
+    expect(publicRpcUrl("testnet", "https://rpc.example.com/near")).toBe("https://rpc.example.com/near");
   });
 
   it("is XRPL-only without NEAR", async () => {
@@ -472,6 +520,12 @@ describe("registering for a NEAR event", () => {
       payload: { address: accountId, publicKey: impostor.publicKey, signature: impostor.sign(message), challenge, displayName: "Priya" },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("offers no Xaman sign-in for a NEAR event", async () => {
+    const res = await server().inject({ method: "POST", url: `/api/events/${NEAR_EVENT}/registrations/signin`, payload: {} });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/on NEAR/);
   });
 
   it("takes a typed account on the website, after checking it exists", async () => {

@@ -43,14 +43,40 @@ export const addressSchema = z
  * whose event, and so whose chain, is not known until the handler runs. The
  * handler then calls requireAddressForChain, which for an XRPL event answers
  * exactly as `addressSchema` always did.
+ *
+ * Anything that is neither gets addressSchema's own message, word for word:
+ * an XRPL caller sending garbage sees the 400 it always saw.
  */
 export const anyChainAddressSchema = z
   .string()
-  .max(64)
-  .refine(
-    (value) => isValidClassicAddress(value) || isNearAccountId(value),
-    "Not a valid XRPL classic address or NEAR account id",
-  );
+  .refine((value) => isValidClassicAddress(value) || isNearAccountId(value), "Not a valid XRPL classic address");
+
+/** True for a string that can only be meant as a NEAR account: NEAR-shaped and not an r-address. */
+export function looksNearOnly(value: unknown): value is string {
+  return typeof value === "string" && !isValidClassicAddress(value) && isNearAccountId(value);
+}
+
+/**
+ * A preValidation hook: for a NEAR-shaped address sent to an event that is not
+ * on NEAR, the 400 addressSchema gave, BEFORE the route's guards and rate
+ * limits run — the order an XRPL caller always had. Reads the event only when
+ * the address is not an r-address.
+ */
+export function xrplAddressFirst(
+  events: Pick<EventRepository, "find"> | undefined,
+  location: "body" | "params",
+  field = "address",
+): (request: { params: unknown; body: unknown }) => Promise<void> {
+  return async (request) => {
+    const source = (location === "body" ? request.body : request.params) as Record<string, unknown> | null;
+    const address = source?.[field];
+    if (!looksNearOnly(address)) return;
+    const raw = String((request.params as { eventId?: unknown } | null)?.eventId ?? "");
+    if (!/^\d+$/.test(raw)) return; // the params schema answers this one
+    const event = events ? await events.find(Number(raw)) : null;
+    requireAddressForChain(event?.chain, address, location, field);
+  };
+}
 
 /**
  * Throws, for an event that is not on NEAR, the same 400 that `addressSchema`

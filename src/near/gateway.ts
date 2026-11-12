@@ -51,8 +51,45 @@ export type NearRpc = Pick<
 
 type RpcResponse = Awaited<ReturnType<NearRpc["sendTransactionUntil"]>>;
 
-/** Errors that mean "this transaction will never run", whatever else is true. */
-const NEVER_RUNS = /InvalidNonce|Expired|InvalidTxError|nonce .*(too|less|already)|expired/i;
+/**
+ * Errors that mean "this transaction will never run", whatever else is true.
+ * Matched against the error's name, its `type` and its message: near-api-js
+ * 7 throws InvalidNonceError ("Invalid nonce (ak: N, tx: M)") with no `type`.
+ */
+const NEVER_RUNS = /InvalidNonce|Invalid nonce|Expired|InvalidTxError|nonce .*(too|less|already)|expired/i;
+
+/**
+ * How hard near-api-js retries one RPC call. Its default (12 retries with
+ * backoff, over a minute) would hold every desk's mint in the queue behind a
+ * struggling node; a mint that cannot get through in a few seconds is better
+ * reported, and retried from its saved bytes.
+ */
+const RPC_OPTIONS = { retries: 2, wait: 500, backoff: 2 };
+
+/**
+ * The longest one RPC call may hold a request. near-api-js's fetch has no
+ * timeout of its own, and mints wait on each other (src/near/issue.ts), so a
+ * node that never answers would hold every desk. Waiting for FINAL normally
+ * takes a few seconds; a mint cut off here is finished later from its saved
+ * bytes, so giving up costs a retry, never a badge.
+ */
+const SEND_TIMEOUT_MS = 30_000;
+const READ_TIMEOUT_MS = 10_000;
+
+class RpcTimeout extends Error {
+  constructor(ms: number) {
+    super(`The NEAR node did not answer within ${ms / 1000}s`);
+    this.name = "RpcTimeout";
+  }
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new RpcTimeout(ms)), ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
 
 function messageOf(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -60,7 +97,8 @@ function messageOf(err: unknown): string {
 
 function typeOf(err: unknown): string {
   const t = (err as { type?: unknown } | null)?.type;
-  return typeof t === "string" ? t : "";
+  const name = err instanceof Error ? err.name : "";
+  return `${name} ${typeof t === "string" ? t : ""}`.trim();
 }
 
 /** The first `ExecutionError` string in a failure, which is the contract's panic. */
@@ -138,12 +176,12 @@ export class NearConnection implements NearGateway {
         "NEAR_MINTER_PRIVATE_KEY is not a NEAR private key (expected ed25519:<base58>).",
       );
     }
-    this.#rpc = rpc ?? new JsonRpcProvider({ url: config.rpcUrl });
+    this.#rpc = rpc ?? new JsonRpcProvider({ url: config.rpcUrl }, RPC_OPTIONS);
   }
 
   async view<T>(method: string, args: Record<string, unknown>): Promise<T> {
     try {
-      return (await this.#rpc.callFunction({ contractId: this.contractId, method, args })) as T;
+      return (await withTimeout(this.#rpc.callFunction({ contractId: this.contractId, method, args }), READ_TIMEOUT_MS)) as T;
     } catch (err) {
       throw new ConnectionError(`NEAR view ${method} on ${this.contractId} failed: ${messageOf(err)}`, {
         method,
@@ -154,7 +192,7 @@ export class NearConnection implements NearGateway {
 
   async accountExists(accountId: string): Promise<boolean> {
     try {
-      await this.#rpc.viewAccount({ accountId, blockQuery: { finality: "final" } });
+      await withTimeout(this.#rpc.viewAccount({ accountId, blockQuery: { finality: "final" } }), READ_TIMEOUT_MS);
       return true;
     } catch (err) {
       if (/does not exist|UNKNOWN_ACCOUNT|AccountDoesNotExist/i.test(`${typeOf(err)} ${messageOf(err)}`)) {
@@ -170,11 +208,11 @@ export class NearConnection implements NearGateway {
     const publicKey = await this.#signer.getPublicKey();
     let key: { nonce: bigint | number; block_hash: string };
     try {
-      key = (await this.#rpc.viewAccessKey({
+      key = (await withTimeout(this.#rpc.viewAccessKey({
         accountId: this.minterAccountId,
         publicKey: publicKey.toString(),
         finalityQuery: { finality: "final" },
-      })) as unknown as { nonce: bigint | number; block_hash: string };
+      }), READ_TIMEOUT_MS)) as unknown as { nonce: bigint | number; block_hash: string };
     } catch (err) {
       throw new ConnectionError(
         `The minter key is not an access key of ${this.minterAccountId}, or the node did not answer: ` +
@@ -201,7 +239,7 @@ export class NearConnection implements NearGateway {
   async send(signed: NearSignedTx): Promise<NearTxOutcome> {
     const tx = SignedTransaction.decode(base64Decode(signed.signedTx));
     try {
-      return outcomeOf(signed.hash, await this.#rpc.sendTransactionUntil(tx, "FINAL"));
+      return outcomeOf(signed.hash, await withTimeout(this.#rpc.sendTransactionUntil(tx, "FINAL"), SEND_TIMEOUT_MS));
     } catch (sendErr) {
       // Maybe it ran already — a resend of bytes that landed the first time —
       // or maybe it never will. The chain knows; ask it by hash.
@@ -221,11 +259,11 @@ export class NearConnection implements NearGateway {
 
   async #statusByHash(hash: string): Promise<NearTxOutcome | null> {
     try {
-      const res = await this.#rpc.viewTransactionStatus({
+      const res = await withTimeout(this.#rpc.viewTransactionStatus({
         txHash: hash,
         accountId: this.minterAccountId,
         waitUntil: "FINAL",
-      });
+      }), READ_TIMEOUT_MS);
       return outcomeOf(hash, res);
     } catch {
       return null;

@@ -92,6 +92,27 @@ export async function nearRoster(
 }
 
 /** Signs `nft_mint` for one attendee. Nothing is sent. */
+/** The contract takes an event title of at most this many UTF-8 bytes. */
+export const MAX_TITLE_BYTES = 200;
+
+/**
+ * `text` cut to at most `max` UTF-8 bytes, never inside a character. The
+ * console allows 200 characters, which in Chinese or with accents is more
+ * than 200 bytes; the contract would refuse every mint for such an event.
+ */
+export function fitBytes(text: string, max: number): string {
+  if (Buffer.byteLength(text, "utf8") <= max) return text;
+  let out = "";
+  let used = 0;
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, "utf8");
+    if (used + n > max) break;
+    out += ch;
+    used += n;
+  }
+  return out;
+}
+
 export function signNearMint(
   near: NearGateway,
   input: { eventId: EventId; accountId: string; eventTitle: string },
@@ -99,7 +120,7 @@ export function signNearMint(
   return near.signCall("nft_mint", {
     event_id: input.eventId,
     receiver_id: input.accountId,
-    event_title: input.eventTitle,
+    event_title: fitBytes(input.eventTitle, MAX_TITLE_BYTES),
   });
 }
 

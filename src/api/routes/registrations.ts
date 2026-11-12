@@ -48,6 +48,14 @@ import { isSignedByImplicitAccount } from "../../near/wallet-proof.js";
 import { WalletChallenges } from "../wallet-challenge.js";
 import { toPublicEvent, type PublicEvent } from "./events.js";
 
+/** Why a NEAR event has no Xaman sign-in. */
+function nearNotXaman(eventId: number): string {
+  return (
+    `Event ${eventId} is on NEAR, so its badge goes to a NEAR account, not an XRPL wallet. ` +
+    "Register with a NEAR account instead."
+  );
+}
+
 /**
  * Statuses that accept a new registration.
  *
@@ -267,6 +275,10 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
           { eventId },
         );
       }
+      // Xaman proves an XRPL wallet, which a NEAR event cannot issue to.
+      if (event.chain === "near") {
+        return sendError(reply, 400, "INVALID_INPUT", nearNotXaman(eventId), { eventId });
+      }
 
       const returnUrl = request.body?.returnUrl;
       const handles = await signIn.create({
@@ -348,6 +360,9 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
           `No event ${eventId} is open for registration.`,
           { eventId },
         );
+      }
+      if (event.chain === "near") {
+        return sendError(reply, 400, "INVALID_INPUT", nearNotXaman(eventId), { eventId });
       }
 
       // 1. THE ONLY SOURCE OF THE ADDRESS. Resolved server-side against Xaman;

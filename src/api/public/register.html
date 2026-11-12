@@ -1870,8 +1870,10 @@ a{color:var(--jade)}
   function nearFits(a) {
     if (!NEAR_RE.test(a) || a.indexOf("0x") === 0) return false;
     if (/^[0-9a-f]{64}$/.test(a)) return true;
-    var suffix = nearNetwork() === "mainnet" ? ".near" : ".testnet";
-    return a.length > suffix.length && a.slice(-suffix.length) === suffix;
+    // The server's own rule (src/near/account.ts fitsNetwork): testnet names
+    // end in .testnet, and on mainnet any name that does not (alice.near, alice.tg).
+    var testnetName = a === "testnet" || a.slice(-8) === ".testnet";
+    return nearNetwork() === "mainnet" ? !testnetName : testnetName;
   }
 
   function startNear() {

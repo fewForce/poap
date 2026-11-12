@@ -16,8 +16,15 @@
  *      sending is finished by the next one sending the SAME bytes, which is the
  *      same transaction and cannot mint twice.
  *   3. SEND AND WAIT FOR FINAL. Nothing is recorded on an optimistic result.
+ *      A transaction that expired without running is signed once more and
+ *      sent. If the badge was minted meanwhile — by this slot's own lost
+ *      transaction, or by anything else — the contract answers the new one
+ *      with `already: true` and the existing record, and that is indexed.
  *   4. RECORD from the contract's answer: the token id, and the block height
  *      from the contract's own record, never a retry's.
+ *
+ * A slot is never left holding nothing: if signing or saving fails before
+ * anything was sent, the slot is freed so the next scan starts clean.
  *
  * Mints go one at a time through this process: one minter key, one nonce
  * sequence. The contract also refuses a second badge for an (event, account)
@@ -35,7 +42,7 @@ import type {
   NearSignedTx,
 } from "../types.js";
 import { assertNearAccountId, isImplicitAccountId } from "./account.js";
-import { nearAttendance, parseMintResult, signNearMint } from "./badges.js";
+import { parseMintResult, signNearMint } from "./badges.js";
 
 export interface NearIssueDeps {
   near: NearGateway;
@@ -121,28 +128,27 @@ async function mintAndConfirm(
   const { near } = deps;
   const eventId = event.eventId;
 
-  // 2. Sign and save, unless an earlier request already did.
+  // 2. Sign and save, unless an earlier request already did. Nothing has been
+  // sent until both succeed, so a failure here frees the slot rather than
+  // leaving it "being issued" for good.
   let signed: NearSignedTx | null = claim.nearTx ?? null;
   if (!signed) {
-    signed = await signNearMint(near, { eventId, accountId: address, eventTitle: event.name });
-    await deps.claims.attach(claim.id, { nearTx: signed });
+    try {
+      signed = await signNearMint(near, { eventId, accountId: address, eventTitle: event.name });
+      await deps.claims.attach(claim.id, { nearTx: signed });
+    } catch (err) {
+      await deps.claims.delete(claim.id).catch((delErr: unknown) => {
+        log?.warn({ claimId: claim.id, err: delErr }, "could not free a NEAR claim slot after signing failed");
+      });
+      throw err;
+    }
   }
 
   // 3. Send. An expired transaction never ran; sign once more and send that.
+  // If the badge exists by now, the contract says so (already: true) and step
+  // 4 indexes the existing record under the transaction that returned it.
   let outcome = await near.send(signed);
   if (outcome.status === "expired") {
-    const onChain = await nearAttendance(near, eventId, address);
-    if (onChain) {
-      // Minted by something other than this slot's transaction: another
-      // server, or a script. The chain is right; the hash to index is not
-      // known here. Leave the slot for an operator rather than guess.
-      throw new XrplLayerError(
-        "CONFLICT",
-        `${address} already holds event ${eventId}'s badge on NEAR, minted outside this claim. ` +
-          "Nothing was sent.",
-        { eventId, address, tokenId: onChain.tokenId, blockHeight: onChain.blockHeight },
-      );
-    }
     signed = await signNearMint(near, { eventId, accountId: address, eventTitle: event.name });
     await deps.claims.attach(claim.id, { nearTx: signed });
     outcome = await near.send(signed);

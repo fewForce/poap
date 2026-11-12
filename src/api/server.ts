@@ -11,7 +11,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import type { ZodType } from "zod";
-import { loadConfig } from "../config.js";
+import { NEAR_RPC_DEFAULTS, loadConfig } from "../config.js";
 import { registerAdminAuth } from "./auth.js";
 import { buildDeps, type ApiDeps } from "./deps.js";
 import { registerErrorHandler } from "./http-errors.js";
@@ -42,6 +42,21 @@ import { registerXamanWebhookRoute } from "./routes/xaman-webhook.js";
  * a password. Everything under /admin/api needs a session — see auth.ts.
  */
 const GLOBAL_RATE_LIMIT = { max: 120, timeWindow: "1 minute" } as const;
+
+/**
+ * The NEAR RPC endpoint /health may publish. An operator's own URL can carry
+ * a provider key in its query string or its user part; that one is kept
+ * private and the network's public endpoint is published in its place.
+ */
+export function publicRpcUrl(network: "testnet" | "mainnet", configured: string): string {
+  try {
+    const u = new URL(configured);
+    if (u.search || u.username || u.password) return NEAR_RPC_DEFAULTS[network];
+    return configured;
+  } catch {
+    return NEAR_RPC_DEFAULTS[network];
+  }
+}
 
 export function buildServer(deps: ApiDeps): FastifyInstance {
   const app = Fastify({
@@ -123,7 +138,7 @@ export function buildServer(deps: ApiDeps): FastifyInstance {
             near: {
               network: deps.near.network,
               contractId: deps.near.contractId,
-              rpcUrl: deps.near.rpcUrl,
+              rpcUrl: publicRpcUrl(deps.near.network, deps.near.rpcUrl),
             },
           }
         : {}),

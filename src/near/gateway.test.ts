@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { KeyPair, SignedTransaction, base64Decode, baseEncode, encodeTransaction } from "near-api-js";
 import { describe, expect, it, vi } from "vitest";
+import { InvalidNonceError, TransactionExpiredError } from "near-api-js/rpc-errors";
 import { ConnectionError, XrplLayerError } from "../errors.js";
 import { NearConnection, failureMessage, type NearRpc } from "./gateway.js";
 
@@ -126,6 +127,22 @@ describe("NearConnection.send", () => {
     await expect(near.send(signed)).resolves.toEqual({ status: "success", hash: signed.hash, value });
   });
 
+  it("knows near-api-js's own nonce and expiry errors mean it will never run", async () => {
+    for (const thrown of [
+      new InvalidNonceError(9, 6, "h", "b"),
+      new TransactionExpiredError("h", "b"),
+    ]) {
+      const rpc = fakeRpc({
+        sendTransactionUntil: vi.fn(async () => {
+          throw thrown;
+        }),
+      });
+      const { near } = connection(rpc);
+      const signed = await signedFor(near);
+      await expect(near.send(signed)).resolves.toEqual({ status: "expired", hash: signed.hash });
+    }
+  });
+
   it("calls a transaction that will never run expired", async () => {
     const rpc = fakeRpc({
       sendTransactionUntil: vi.fn(async () => {
@@ -135,6 +152,21 @@ describe("NearConnection.send", () => {
     const { near } = connection(rpc);
     const signed = await signedFor(near);
     await expect(near.send(signed)).resolves.toEqual({ status: "expired", hash: signed.hash });
+  });
+
+  it("gives up on a node that never answers, so the mint queue moves on", async () => {
+    vi.useFakeTimers();
+    try {
+      const rpc = fakeRpc({ sendTransactionUntil: vi.fn(() => new Promise(() => undefined)) });
+      const { near } = connection(rpc);
+      const signed = await signedFor(near);
+      const sent = near.send(signed);
+      const caught = sent.catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await caught).toBeInstanceOf(ConnectionError);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not guess when the node simply did not answer", async () => {

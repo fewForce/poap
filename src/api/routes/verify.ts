@@ -14,7 +14,8 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { nearAttendance } from "../../near/badges.js";
 import type { ApiDeps } from "../deps.js";
-import { addressSchema, anyChainAddressSchema, eventIdSchema, sendError, txHashSchema } from "../http-errors.js";
+import { addressSchema, eventIdSchema, looksNearOnly, sendError, txHashSchema } from "../http-errors.js";
+import { assertNearAccountId } from "../../near/account.js";
 
 /** The XRPL query, exactly as it always was. Re-run in full for XRPL events. */
 const xrplVerifyQuerySchema = z.object({
@@ -24,14 +25,29 @@ const xrplVerifyQuerySchema = z.object({
   txHash: txHashSchema,
 });
 
-/** Loose enough for both; the chain's own rules are applied in the handler. */
-const verifyQuerySchema = z.object({
-  address: anyChainAddressSchema,
+/** For an address that can only be a NEAR account: no hash needed, the chain decides the rest. */
+const nearShapedQuerySchema = z.object({
+  address: z.string(),
   eventId: eventIdSchema,
   txHash: z.string().max(100).optional(),
 });
 
-type VerifyQuery = z.infer<typeof verifyQuerySchema>;
+type VerifyQuery = z.infer<typeof nearShapedQuerySchema>;
+
+/**
+ * The edge check: the XRPL schema, exactly as before NEAR, for every query
+ * except one whose address can only be a NEAR account. An XRPL caller gets
+ * every issue it always got, the txHash ones included.
+ */
+const verifyQuerySchema = z.unknown().transform((data, ctx): VerifyQuery => {
+  const address = (data as { address?: unknown } | null)?.address;
+  const result = (looksNearOnly(address) ? nearShapedQuerySchema : xrplVerifyQuerySchema).safeParse(data);
+  if (!result.success) {
+    for (const issue of result.error.issues) ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+    return z.NEVER;
+  }
+  return result.data;
+});
 
 export function registerVerifyRoute(app: FastifyInstance, deps: ApiDeps): void {
   /**
@@ -45,7 +61,10 @@ export function registerVerifyRoute(app: FastifyInstance, deps: ApiDeps): void {
     "/verify",
     { schema: { querystring: verifyQuerySchema } },
     async (request, reply) => {
-      const event = deps.events ? await deps.events.find(request.query.eventId) : null;
+      // Only an address that can only be NEAR needs the event read first; an
+      // r-address goes the XRPL way it always went.
+      const event =
+        looksNearOnly(request.query.address) && deps.events ? await deps.events.find(request.query.eventId) : null;
 
       if (event?.chain === "near") {
         const { address, eventId } = request.query;
@@ -54,6 +73,7 @@ export function registerVerifyRoute(app: FastifyInstance, deps: ApiDeps): void {
             eventId,
           });
         }
+        assertNearAccountId(address, deps.near.network);
         const record = await nearAttendance(deps.near, eventId, address);
         const indexed = await deps.attendance.findByEventAndAddress(eventId, address);
         return reply.code(200).send({

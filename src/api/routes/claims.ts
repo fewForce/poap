@@ -42,6 +42,7 @@ import {
   eventIdSchema,
   offerIdSchema,
   requireAddressForChain,
+  xrplAddressFirst,
   requireEventAddress,
   sendError,
   txHashSchema,
@@ -656,6 +657,9 @@ export function registerClaimRoutes(app: FastifyInstance, deps: ApiDeps): void {
     {
       schema: { params: eventIdParamsSchema, body: claimBodySchema },
       config: { rateLimit },
+      // An XRPL event refuses a NEAR-shaped address before the guard and the
+      // per-address limit, exactly where the old address schema refused it.
+      preValidation: xrplAddressFirst(deps.events, "body"),
       preHandler: enforceAddressLimit ? [mintGuard, enforceAddressLimit] : mintGuard,
     },
     async (request, reply) => {
