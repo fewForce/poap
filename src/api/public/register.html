@@ -860,7 +860,7 @@ a{color:var(--jade)}
       <div class="face__eyebrow"><span class="label">Step two</span></div>
       <h2>Who shall we <em>expect</em>?</h2>
 
-      <div class="proved">
+      <div class="proved" id="proved">
         <div class="proved__k">
           <span class="label">Your wallet</span>
           <span class="pill pill--yes">Confirmed</span>
@@ -879,6 +879,21 @@ a{color:var(--jade)}
       </figure>
 
       <form id="form" autocomplete="on" novalidate>
+        <!-- NEAR events only: the account the badge goes into. Typed, so it is
+             the guest's word; the server refuses a named account that does not
+             exist, which catches most typos before the door. -->
+        <div class="field" id="near-field" hidden>
+          <label class="label" for="na"><span>Your NEAR account</span></label>
+          <input id="na" name="near-account" type="text" maxlength="64" autocomplete="off"
+                 inputmode="email" spellcheck="false" autocapitalize="off" autocorrect="off"
+                 placeholder="alice.testnet">
+          <p class="field__why">
+            <b>Check it letter by letter.</b> Your badge goes straight into this account at the door
+            and can never be moved, so a typo would keep it from you for good. Using the POAP app?
+            It registers you with its own account, so you need not type one.
+          </p>
+        </div>
+
         <div class="field">
           <label class="label" for="dn"><span>The name on the list</span><span class="field__count" id="dn-count"></span></label>
           <input id="dn" name="name" type="text" maxlength="120" autocomplete="name"
@@ -1428,7 +1443,7 @@ a{color:var(--jade)}
     }
     if (app.face === "details") {
       return { label: app.busy ? "Registering…" : "Complete my registration",
-               note: "sends your name — never a secret" };
+               note: isNear() ? "sends your account and name — never a secret" : "sends your name — never a secret" };
     }
     return null;
   }
@@ -1838,7 +1853,117 @@ a{color:var(--jade)}
     c.className = "field__count" + (n >= MAX_NAME ? " warn" : "");
   }
 
+  /* ======================================================================
+     NEAR. No Xaman: the account is typed into step two beside the name, and
+     POST /registrations/near checks its shape, its network and that a named
+     account exists before writing anything.
+     ====================================================================== */
+  var NEAR_RE = /^(?=.{2,64}$)(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
+
+  function isNear() { return !!(app.event && app.event.chain === "near"); }
+
+  function nearNetwork() {
+    return app.health && app.health.near && app.health.near.network === "mainnet" ? "mainnet" : "testnet";
+  }
+
+  /** Whether an account id can be on this event's network: implicit, or ending in its suffix. */
+  function nearFits(a) {
+    if (!NEAR_RE.test(a) || a.indexOf("0x") === 0) return false;
+    if (/^[0-9a-f]{64}$/.test(a)) return true;
+    var suffix = nearNetwork() === "mainnet" ? ".near" : ".testnet";
+    return a.length > suffix.length && a.slice(-suffix.length) === suffix;
+  }
+
+  function startNear() {
+    /* Two steps, not three: there is no wallet to prove first. */
+    show("st-1", false);
+    var n2 = document.querySelector("#st-2 .step__n"), n3 = document.querySelector("#st-3 .step__n");
+    if (n2) n2.textContent = "1";
+    if (n3) n3.textContent = "2";
+    var e2 = document.querySelector('[data-face="details"] .face__eyebrow .label');
+    if (e2) e2.textContent = "Step one";
+    var e3 = document.querySelector('[data-face="done"] .face__eyebrow .label');
+    if (e3) e3.textContent = "Step two";
+    show("proved", false);
+    show("art-preview", false);
+    show("near-field", true);
+    $("na").placeholder = nearNetwork() === "mainnet" ? "alice.near" : "alice.testnet";
+    showFace("details");
+    paintNameCount();
+    if (!app.coarse) { var na = $("na"); if (na) na.focus(); }
+  }
+
+  function submitNear() {
+    if (app.busy) return;
+    clearError("details-err");
+    var account = ($("na").value || "").trim().toLowerCase();
+    var name = ($("dn").value || "").trim().slice(0, MAX_NAME);
+    var email = ($("em").value || "").trim();
+
+    if (!account || !nearFits(account)) {
+      showLocalError("details-err", "CHECK_THE_ACCOUNT",
+        account ? "That is not a NEAR account on " + nearNetwork() : "We need your NEAR account",
+        "Your badge goes into it at the door. " + (nearNetwork() === "mainnet"
+          ? "A NEAR account looks like alice.near, or a 64-character code from your wallet."
+          : "A testnet account looks like alice.testnet, or a 64-character code from your wallet."),
+        "Copy it from your wallet if you can, rather than typing it.");
+      focusField("na");
+      return;
+    }
+    if (!name) {
+      showLocalError("details-err", "CHECK_THE_NAME",
+        "We need a name for the list",
+        "Whoever is on the door looks you up by name \u2014 without one, finding you means reading a long account name off a screen.",
+        "Whatever you are called on the day is fine. It does not have to match anything.");
+      focusField("dn");
+      return;
+    }
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showLocalError("details-err", "CHECK_THE_EMAIL",
+        "That email does not look finished",
+        "\u201c" + email + "\u201d is not quite an address \u2014 it needs something either side of the @, and a dot in the part after it.",
+        "Fix the typo, or clear the field \u2014 it is optional.");
+      focusField("em");
+      return;
+    }
+
+    var body = { accountId: account, displayName: name };
+    if (email) body.email = email;
+    app.busy = true;
+    paintDock();
+    call("POST", "/api/events/" + encodeURIComponent(String(app.eventId)) + "/registrations/near", body)
+      .then(function (r) {
+        app.busy = false;
+        paintDock();
+        if (r.ok && r.json) { showDone(r.json.registration || r.json, false); return; }
+        if (r.status === 409) {
+          var existing = r.json && r.json.registration;
+          if (existing) { showDone(existing, true); return; }
+        }
+        if (r.status === 400) {
+          showError("details-err", r, {
+            warn: true,
+            title: "Check the account",
+            hint: "Nothing was stored. Fix the account and press again.",
+            retryLabel: "Try again",
+            retry: submitNear
+          });
+          focusField("na");
+          return;
+        }
+        if (r.status === 404) { showClosed(r); return; }
+        showError("details-err", r, {
+          warn: r.status === 429,
+          title: r.status === 429 ? "One moment" : "We could not save that",
+          hint: "Nothing was written. Pressing again is safe.",
+          retryLabel: "Try again",
+          retry: submitNear
+        });
+      });
+  }
+
   function submitRegistration() {
+    if (isNear()) { submitNear(); return; }
     if (app.busy || !app.signin) return;
     clearError("details-err");
 
@@ -1980,14 +2105,15 @@ a{color:var(--jade)}
       var box = node("div", "already");
       box.appendChild(node("div", "already__t", "you were already on the list"));
       box.appendChild(node("p", null,
-        "This wallet was registered for this event once before, so nothing changed. What you see below is that registration — the same one they will have on the door."));
+        (isNear() ? "This account" : "This wallet") + " was registered for this event once before, so nothing changed. What you see below is that registration — the same one they will have on the door."));
       already_.appendChild(box);
     }
 
     /* One line: what happens next, in the order it happens. */
     var venue = ev.venue ? String(ev.venue) : "the event";
-    setText("done-next",
-      "Bring this wallet to " + venue + ", show it to whoever is on the door, and your badge is handed straight to it. It is yours to keep, and it cannot be passed on to anyone else.");
+    setText("done-next", isNear()
+      ? "Open your pass at " + venue + " and show it to whoever is on the door: your badge goes straight into this NEAR account. It is yours to keep, and it cannot be passed on to anyone else."
+      : "Bring this wallet to " + venue + ", show it to whoever is on the door, and your badge is handed straight to it. It is yours to keep, and it cannot be passed on to anyone else.");
 
     /* The pass, for this event, on this phone. Registering and turning up are
        two different days for most people — but they are the same minute for
@@ -2006,7 +2132,7 @@ a{color:var(--jade)}
     var rows = $("done-rows");
     clear(rows);
     rows.appendChild(row("Name", reg.displayName || "— not given —", { prose: true }));
-    rows.appendChild(row("Your wallet", reg.address || app.address, { ok: true }));
+    rows.appendChild(row(isNear() ? "Your NEAR account" : "Your wallet", reg.address || app.address, { ok: true }));
     rows.appendChild(row("Event", ev.name || "This event", { prose: true }));
     if (reg.registeredAt) rows.appendChild(row("Registered", fmtStamp(reg.registeredAt)));
     rows.appendChild(row("Reference", reg.id));
@@ -2188,6 +2314,7 @@ a{color:var(--jade)}
   }
 
   function startFlow() {
+    if (isNear()) { startNear(); return; }
     app.address = ssGet(ssKey("address"));
     var rawSignin = ssGet(ssKey("signin"));
     if (rawSignin) {
@@ -2272,6 +2399,7 @@ a{color:var(--jade)}
     $("dn").addEventListener("input", paintNameCount);
     $("form").addEventListener("submit", function (ev) { ev.preventDefault(); submitRegistration(); });
     $("em").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); submitRegistration(); } });
+    $("na").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); submitRegistration(); } });
 
     var id = eventIdFromPath();
 
