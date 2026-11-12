@@ -13,6 +13,7 @@ import { ed25519Wallet } from "../../test/helpers/ed25519-wallet.js";
 import { MockGateway } from "../../test/helpers/mock-gateway.js";
 import { MockNearGateway } from "../../test/helpers/mock-near-gateway.js";
 import type { AppConfig } from "../config.js";
+import type { InviteeRecord, InviteeRepository } from "../types.js";
 import {
   MemoryAttendanceRepository,
   MemoryClaimRepository,
@@ -23,6 +24,7 @@ import { registrationMessage } from "../xrpl/wallet-proof.js";
 import type { ApiDeps, ChainOps } from "./deps.js";
 import { registerErrorHandler } from "./http-errors.js";
 import { registerDeskRoutes } from "./routes/desk.js";
+import { registerInviteeRoutes } from "./routes/invitees.js";
 import { registerEventRoutes } from "./routes/events.js";
 import { buildServer } from "./server.js";
 
@@ -329,6 +331,88 @@ describe("the desk's lookup of a NEAR account", () => {
   it("does not take an XRPL address for a NEAR event", async () => {
     const res = (await lookup(deskServer(), XRPL_ATTENDEE)).json();
     expect(res.valid).toBe(false);
+  });
+});
+
+describe("the volunteer app's new wallet on a NEAR event", () => {
+  /** Just enough of an invite list for these routes. */
+  class FakeInvitees implements InviteeRepository {
+    rows: InviteeRecord[] = [];
+    async addMany(eventId: number, entries: Array<{ email: string; displayName?: string | null }>) {
+      for (const e of entries) {
+        this.rows.push({ id: String(this.rows.length + 1), eventId, email: e.email, displayName: e.displayName ?? null, address: null, walletSetAt: null, createdAt: new Date() } as InviteeRecord);
+      }
+      return entries.length;
+    }
+    async list(eventId: number) {
+      return this.rows.filter((r) => r.eventId === eventId);
+    }
+    async find(eventId: number, email: string) {
+      return this.rows.find((r) => r.eventId === eventId && r.email === email) ?? null;
+    }
+    async setAddress(eventId: number, email: string, address: string) {
+      const row = await this.find(eventId, email);
+      if (!row || row.address) return null;
+      row.address = address;
+      row.walletSetAt = new Date();
+      return row;
+    }
+    async remove() {
+      return false;
+    }
+  }
+
+  let invitees: FakeInvitees;
+  function inviteServer() {
+    const app = Fastify({ logger: false });
+    app.setValidatorCompiler(({ schema }) => (data) => {
+      const result = (schema as ZodType).safeParse(data);
+      return result.success ? { value: result.data } : { error: result.error };
+    });
+    registerErrorHandler(app);
+    registerInviteeRoutes(app, { ...deps(), invitees });
+    return app;
+  }
+  const IMPLICIT = "98793cd91a3f870fb126f66285808c7e094afcfc4eda8a970f6648cdf0dbd6de";
+
+  beforeEach(async () => {
+    invitees = new FakeInvitees();
+    await invitees.addMany(NEAR_EVENT, [{ email: "ada@example.com", displayName: "Ada" }]);
+    await invitees.addMany(XRPL_EVENT, [{ email: "ada@example.com", displayName: "Ada" }]);
+  });
+
+  it("saves the NEAR account, puts them on the list, and pays nothing", async () => {
+    const res = await inviteServer().inject({
+      method: "POST",
+      url: `/admin/api/events/${NEAR_EVENT}/invitees/wallet`,
+      payload: { email: "ada@example.com", address: IMPLICIT },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ invitee: { address: IMPLICIT }, payment: null, paymentError: null });
+    expect((await registrations.findByAddress(NEAR_EVENT, IMPLICIT))?.displayName).toBe("Ada");
+  });
+
+  it("will not save an XRPL address against a NEAR event", async () => {
+    const res = await inviteServer().inject({
+      method: "POST",
+      url: `/admin/api/events/${NEAR_EVENT}/invitees/wallet`,
+      payload: { email: "ada@example.com", address: XRPL_ATTENDEE },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("INVALID_ADDRESS");
+  });
+
+  it("refuses a NEAR account on an XRPL event exactly as before", async () => {
+    const res = await inviteServer().inject({
+      method: "POST",
+      url: `/admin/api/events/${XRPL_EVENT}/invitees/wallet`,
+      payload: { email: "ada@example.com", address: IMPLICIT },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toMatchObject({
+      code: "BAD_REQUEST",
+      details: { location: "body", issues: [{ path: "address", message: "Not a valid XRPL classic address" }] },
+    });
   });
 });
 

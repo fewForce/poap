@@ -8,6 +8,10 @@
  *   POST   /admin/api/events/:eventId/invitees/wallet        save a new wallet against an email,
  *                                                            register it, fund it from the treasury
  *
+ * On a NEAR event the "wallet" is a NEAR account (the volunteer app makes an
+ * ed25519 key and sends its implicit account), and nothing is paid: a NEAR
+ * badge needs no funded account, and the treasury pays XRP.
+ *
  * All behind the desk login, like the rest of /admin/api. The volunteer app
  * signs in with the same email and password the desk uses.
  */
@@ -16,7 +20,15 @@ import { z } from "zod";
 import { XrplLayerError } from "../../errors.js";
 import { payAllowanceFor } from "../allowance.js";
 import type { ApiDeps } from "../deps.js";
-import { addressSchema, eventIdParamsSchema, eventIdSchema, sendError, type EventIdParams } from "../http-errors.js";
+import {
+  anyChainAddressSchema,
+  eventIdParamsSchema,
+  eventIdSchema,
+  requireAddressForChain,
+  sendError,
+  type EventIdParams,
+} from "../http-errors.js";
+import { assertNearAccountId } from "../../near/account.js";
 import { adminGuard } from "./events.js";
 
 const emailSchema = z.string().trim().toLowerCase().pipe(z.email().max(254));
@@ -26,7 +38,8 @@ const addBodySchema = z.object({
   text: z.string().max(200_000),
 });
 const checkQuerySchema = z.object({ email: emailSchema });
-const walletBodySchema = z.object({ email: emailSchema, address: addressSchema });
+// Either chain at the edge; checked against the event's chain once it is known.
+const walletBodySchema = z.object({ email: emailSchema, address: anyChainAddressSchema });
 const emailParamsSchema = z.object({ eventId: eventIdSchema, email: emailSchema });
 
 function parseLines(text: string): { entries: Array<{ email: string; displayName: string | null }>; rejected: string[] } {
@@ -106,6 +119,13 @@ export function registerInviteeRoutes(app: FastifyInstance, deps: ApiDeps): void
 
       const event = await eventOr404(eventId);
       if (!event) return sendError(reply, 404, "NOT_FOUND", `No event ${eventId}.`, { eventId });
+      const onNear = event.chain === "near";
+      // The same 400 as before NEAR for an XRPL event given anything but an r-address.
+      requireAddressForChain(event.chain, address, "body");
+      if (onNear) {
+        if (!deps.near) return sendError(reply, 503, "SERVICE_UNAVAILABLE", "NEAR is not set up on this server.", { eventId });
+        assertNearAccountId(address, deps.near.network);
+      }
 
       const invitee = await invitees.find(eventId, email);
       if (!invitee) {
@@ -143,13 +163,16 @@ export function registerInviteeRoutes(app: FastifyInstance, deps: ApiDeps): void
 
       // The new wallet's XRP, from the event's own treasury: what it needs to
       // hold a badge plus the event's allowance (1.21 + allowance).
+      // Not on NEAR: nothing there needs paying for.
       let payment: unknown = null;
       let paymentError: string | null = null;
-      try {
-        payment = await payAllowanceFor(deps, { eventId, address });
-      } catch (err) {
-        paymentError = err instanceof Error ? err.message : "The treasury payment did not go through.";
-        request.log.warn({ eventId, address, err: paymentError }, "volunteer wallet saved but not funded");
+      if (!onNear) {
+        try {
+          payment = await payAllowanceFor(deps, { eventId, address });
+        } catch (err) {
+          paymentError = err instanceof Error ? err.message : "The treasury payment did not go through.";
+          request.log.warn({ eventId, address, err: paymentError }, "volunteer wallet saved but not funded");
+        }
       }
 
       request.log.info({ eventId, email, address }, "volunteer app saved a wallet against an invitee");
