@@ -14,7 +14,8 @@
  *
  * NEEDS (as the server does — the lines scripts/near-deploy.ts writes):
  *   NEAR_NETWORK=testnet NEAR_CONTRACT_ID NEAR_MINTER_ACCOUNT_ID NEAR_MINTER_PRIVATE_KEY
- *   NEAR_RPC_URL optional.
+ *   NEAR_RPC_URL optional. Read from the environment, or else from
+ *   secrets/near-minter.env, so right after a deploy it needs nothing.
  *
  * RUN:
  *   npx tsx scripts/04-near-testnet-e2e.ts
@@ -30,12 +31,15 @@ import { nearAttendance, nearRoster, parseMintResult, signNearMint } from "../sr
 import { createNearGateway } from "../src/near/gateway.js";
 import { issueNearBadge } from "../src/near/issue.js";
 import type { EventRecord } from "../src/types.js";
+import { readEnvFile } from "./lib/near.js";
 import { createReport, registerSecret } from "./lib/report.js";
 
 const r = createReport("04 · NEAR testnet end to end");
 
+const MINTER_FILE = readEnvFile("secrets/near-minter.env");
+
 function env(key: string): string | undefined {
-  const v = process.env[key]?.trim();
+  const v = process.env[key]?.trim() || MINTER_FILE[key];
   return v ? v : undefined;
 }
 

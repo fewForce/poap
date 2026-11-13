@@ -62,6 +62,9 @@ the brief, and measure again rather than reasoning from it.
   `test/helpers/mock-gateway.ts`, and `MockNearGateway` from
   `test/helpers/mock-near-gateway.ts` for NEAR.
 - The contract has its own tests: `cargo test` in `contracts/near-badges`.
+- The contract is upgradable and its state outlives every release: never
+  reorder or remove `StorageKey` variants, and change `Contract` only with a
+  matching `migrate` (docs/near-chain.md, "Upgrading").
 - Network-touching work lives in `scripts/` and is run by hand.
 
 ## Commands
@@ -70,7 +73,8 @@ the brief, and measure again rather than reasoning from it.
 npm run typecheck     # tsc --noEmit
 npm test              # vitest run
 npm run e2e:testnet   # scripts/01-testnet-e2e.ts, needs network
-npm run near:deploy   # scripts/near-deploy.ts, dry unless -- --yes
+npm run near:deploy   # scripts/near-deploy.ts, dry unless -- --yes (testnet: -- --create-account)
+npm run near:upgrade  # scripts/near-upgrade.ts, new code + migrate, dry unless -- --yes
 npm run e2e:near      # scripts/04-near-testnet-e2e.ts, needs a deployed contract
 contracts/near-badges/build.sh   # the contract, nightly Rust, MVP wasm
 ```

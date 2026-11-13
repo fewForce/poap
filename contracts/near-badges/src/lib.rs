@@ -23,6 +23,10 @@
 //!     changes the owner and edits the collection's metadata. Owner calls need
 //!     one yoctoNEAR, so they need a full access key.
 //!   - a holder burns their own badge.
+//!   - the owner can replace the contract's code (`update_contract`), which
+//!     runs `migrate` on the new code in the same receipt. The contract
+//!     account's own full access key can do the same with a deploy
+//!     transaction. Either way the badges, records and minters stay.
 //!
 //! Storage is paid from the contract account's balance; nothing per badge is
 //! stored that can be worked out instead. Title and links come from the event
@@ -31,7 +35,7 @@
 
 use near_sdk::json_types::{U128, U64};
 use near_sdk::store::{IterableSet, LookupMap, Vector};
-use near_sdk::{env, near, require, AccountId, BorshStorageKey, NearToken, PanicOnDefault};
+use near_sdk::{env, near, require, AccountId, BorshStorageKey, Gas, NearToken, PanicOnDefault, Promise};
 use std::collections::HashMap;
 
 pub type TokenId = String;
@@ -41,6 +45,11 @@ pub const VERSION: &str = "1.0.0";
 
 const MAX_PAGE: u64 = 100;
 const MAX_TITLE: usize = 200;
+
+/// Gas for `migrate` when the contract replaces its own code: reading the old
+/// state and writing the new. The rest of `update_contract`'s gas pays for
+/// the deploy.
+const MIGRATE_GAS: Gas = Gas::from_tgas(50);
 
 #[near]
 #[derive(BorshStorageKey)]
@@ -434,6 +443,47 @@ impl Contract {
         self.assert_owner();
         Self::check_metadata(&metadata);
         self.metadata = metadata;
+    }
+
+    // ---- upgrades --------------------------------------------------------------
+
+    /// Owner only: replaces this contract's code with the wasm sent as the
+    /// call's raw input (the bytes themselves, not JSON), then runs `migrate`
+    /// on the new code.
+    ///
+    /// The deploy and `migrate` travel as one receipt to this account, so they
+    /// succeed or fail together: new code whose `migrate` fails, or that has
+    /// none, never replaces the old. Attach 1 yoctoNEAR and 300 Tgas.
+    ///
+    /// A release must keep this method, or the next upgrade needs the contract
+    /// account's full access key.
+    #[payable]
+    pub fn update_contract(&mut self) -> Promise {
+        self.assert_owner();
+        let code = env::input().unwrap_or_else(|| env::panic_str("Send the new wasm as the call's input"));
+        require!(code.starts_with(b"\0asm"), "The input is not a wasm module");
+        Promise::new(env::current_account_id()).deploy_contract(code).function_call(
+            "migrate",
+            Vec::new(),
+            NearToken::from_yoctonear(0),
+            MIGRATE_GAS,
+        )
+    }
+
+    /// Runs on new code straight after it is deployed, from `update_contract`
+    /// or from a deploy transaction the contract account signs itself. It
+    /// reads the state as the old code left it and returns it in the new
+    /// shape. The shape has not changed since 1.0.0, so today this reads the
+    /// state and writes it back.
+    ///
+    /// A release that changes `Contract` puts the conversion here: read the
+    /// previous struct with `env::state_read::<OldContract>()` and build the
+    /// new one. Collections keep their data as long as their `StorageKey`
+    /// prefixes do not change. See "Upgrading" in docs/near-chain.md.
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        env::state_read::<Self>().unwrap_or_else(|| env::panic_str("There is no contract state to migrate"))
     }
 }
 

@@ -43,6 +43,10 @@ and `attendance(event_id, account_id)` answers from the record.
 `already: true` instead of minting a second one. A retry after a lost response
 is therefore safe.
 
+**Upgradable.** The owner can replace the contract's code with
+`update_contract`, and the contract account's own key can redeploy it; both
+run `migrate` on the new code in the same receipt. See Upgrading below.
+
 **Only minters mint.** The contract owner adds and removes minter accounts; the
 contract's own account is a minter from the start. The server signs as the
 contract account with a **function-call access key** that may call `nft_mint`
@@ -187,17 +191,59 @@ attendee is never asked to make or fund anything.
 
 ## Deploying
 
-1. `contracts/near-badges/build.sh` (needs nightly Rust and `rust-src`).
-2. Create and fund the contract account with any NEAR wallet, e.g.
-   `badges.feooh.testnet`: about 5 NEAR covers the code and some 600 badges.
-3. `NEAR_CONTRACT_ID=… NEAR_DEPLOYER_PRIVATE_KEY=… BADGE_BASE_URL=https://…
-   npm run near:deploy` reads the chain and prints the plan; add `-- --yes` to
-   send it. It deploys, initialises and adds the mint-only key in one
-   transaction, and writes the server's four `NEAR_*` lines to
-   `secrets/near-minter.env`.
-4. Put those lines in the server's environment and restart. `/health` lists
+1. `contracts/near-badges/build.sh` (needs nightly Rust and `rust-src`). The
+   deploy and upgrade scripts check the result: MVP WebAssembly only, and the
+   `migrate` and `update_contract` methods present.
+2. The contract account.
+   - **Testnet, from nothing:** `npm run near:deploy -- --create-account
+     --yes` with `NEAR_CONTRACT_ID=poap-badges-<you>.testnet` asks NEAR's
+     testnet faucet to create and fund it. Its full access key is written to
+     `secrets/near-deployer.env` before the faucet is asked; the scripts read
+     it from there afterwards.
+   - **Any network, with a wallet:** create and fund the account yourself
+     (about 5 NEAR covers the code and some 600 badges), and pass its full
+     access key as `NEAR_DEPLOYER_PRIVATE_KEY`.
+3. `BADGE_BASE_URL=https://… npm run near:deploy` reads the chain and prints
+   the plan; add `-- --yes` to send it. It deploys, initialises and adds the
+   mint-only key in one transaction, and writes the server's four `NEAR_*`
+   lines to `secrets/near-minter.env`.
+4. `npm run e2e:near` mints one badge to a fresh account and reads it back,
+   using `secrets/near-minter.env`.
+5. Put those lines in the server's environment and restart. `/health` lists
    `near` among its chains, and the console offers NEAR on new events.
-5. `npm run e2e:near` mints one badge to a fresh account and reads it back.
+
+## Upgrading
+
+The contract can take new code without losing anything it holds.
+
+- **How.** `npm run near:upgrade` (dry unless `-- --yes`). By default it
+  signs with the contract account's own key (`secrets/near-deployer.env`):
+  one transaction that deploys the new code and calls `migrate` on it. With
+  `-- --via=owner`, the contract's owner (`NEAR_OWNER_ID`,
+  `NEAR_OWNER_PRIVATE_KEY`) calls `update_contract` with the wasm as the
+  call's input instead, which works even if the contract account's keys are
+  later removed.
+- **Atomic.** Either way the deploy and `migrate` are one receipt: if
+  `migrate` fails, the old code stays. The script reads owner, minters,
+  paused, supply and metadata before and after, and stops if the code hash
+  is already the one being deployed.
+- **Who.** Only the owner (1 yoctoNEAR, so a full access key) or the
+  contract account's own full access key. The server's minting key cannot:
+  it may call `nft_mint` only, and cannot attach a deposit.
+
+Rules for a release, so `migrate` stays simple:
+
+- Never reorder, rename the meaning of, or remove `StorageKey` variants:
+  each variant's position is the storage prefix of a collection, and a
+  changed prefix is a collection that looks empty. Add new ones at the end.
+- Adding or changing a field of `Contract` needs `migrate` to read the old
+  struct (`env::state_read::<OldContract>()`) and build the new one. Today
+  `migrate` reads and writes the same shape.
+- Changing `Record` (one per badge) cannot be done in `migrate` for every
+  badge at once: read old and new shapes side by side, or version the value.
+- Keep `migrate`, `update_contract` and `version` in every release. The
+  scripts refuse a wasm without the first two. Bump `VERSION` so the
+  upgrade's "before → after" means something.
 
 ## Not in this round
 

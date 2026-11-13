@@ -26,6 +26,7 @@
     "e2e:mainnet": "tsx scripts/03-mainnet-rehearsal.ts",
     "e2e:near": "tsx scripts/04-near-testnet-e2e.ts",
     "near:deploy": "tsx scripts/near-deploy.ts",
+    "near:upgrade": "tsx scripts/near-upgrade.ts",
     "migrate": "tsx scripts/migrate.ts",
     "reap:offers": "tsx scripts/reap-offers.ts",
     "publish:badge": "tsx scripts/publish-badge.ts",

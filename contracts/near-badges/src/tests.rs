@@ -353,3 +353,74 @@ fn a_mint_fails_clearly_when_storage_cannot_be_paid() {
     testing_env!(ctx.build());
     c.nft_mint(1, account("alice.testnet"), "t".into());
 }
+
+// ---- upgrades ------------------------------------------------------------------
+
+/// The caller and the raw input of an `update_contract` call.
+fn as_caller_with_input(who: &AccountId, deposit: u128, input: &[u8]) {
+    let mut b = context(who, deposit);
+    b.context.input = std::rc::Rc::from(input.to_vec());
+    testing_env!(b.build());
+}
+
+/// What a real wasm module starts with: the magic number and version 1.
+const WASM: &[u8] = b"\0asm\x01\0\0\0";
+
+#[test]
+fn migrate_keeps_every_badge_record_and_minter() {
+    let mut c = setup();
+    mint(&mut c, 70011, "alice.testnet");
+    mint(&mut c, 70012, IMPLICIT);
+    as_caller(&owner(), 1);
+    c.add_minter(account("desk.feooh.testnet"));
+    // What the old code leaves on disk when its call ends.
+    env::state_write(&c);
+    drop(c);
+
+    // `migrate` runs as the contract itself, on the new code.
+    as_caller(&contract_id(), 0);
+    let m = Contract::migrate();
+    assert_eq!(m.nft_total_supply(), U128(2));
+    assert_eq!(m.attendance(70011, account("alice.testnet")).map(|a| a.token_id), Some("70011:alice.testnet".into()));
+    assert_eq!(m.nft_tokens_for_owner(account(IMPLICIT), None, None).len(), 1);
+    assert!(m.is_minter(account("desk.feooh.testnet")));
+    assert_eq!(m.owner(), owner());
+    assert_eq!(m.event_title(70011).as_deref(), Some("XRPL Make Waves"));
+}
+
+// `migrate` is #[private]: the generated entry point refuses any caller but
+// the contract itself. That check lives outside the Rust function, so a unit
+// test calling it directly cannot see it.
+
+#[test]
+fn the_owner_can_replace_the_code() {
+    let mut c = setup();
+    as_caller_with_input(&owner(), 1, WASM);
+    // Returns the deploy-and-migrate promise; the runtime runs it after this call.
+    let _ = c.update_contract();
+}
+
+#[test]
+#[should_panic(expected = "Only the owner can do this")]
+fn only_the_owner_can_replace_the_code() {
+    let mut c = setup();
+    as_caller_with_input(&account("mallory.testnet"), 1, WASM);
+    let _ = c.update_contract();
+}
+
+#[test]
+#[should_panic(expected = "Attach exactly 1 yoctoNEAR")]
+fn replacing_the_code_needs_a_full_access_key() {
+    // A function-call key (like the server's minting key) cannot attach a deposit.
+    let mut c = setup();
+    as_caller_with_input(&owner(), 0, WASM);
+    let _ = c.update_contract();
+}
+
+#[test]
+#[should_panic(expected = "The input is not a wasm module")]
+fn replacing_the_code_needs_wasm() {
+    let mut c = setup();
+    as_caller_with_input(&owner(), 1, b"{\"code\":\"oops\"}");
+    let _ = c.update_contract();
+}
