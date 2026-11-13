@@ -112,9 +112,10 @@ export async function isFullAccessKey(rpc: JsonRpcProvider, accountId: string, p
   }
 }
 
+/** The account as of the last FINAL block: what a transaction signed now will see, keys included. */
 export async function accountOrNull(rpc: JsonRpcProvider, accountId: string) {
   try {
-    return await rpc.viewAccount({ accountId });
+    return await rpc.viewAccount({ accountId, blockQuery: { finality: "final" } });
   } catch {
     return null;
   }
