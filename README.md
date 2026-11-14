@@ -206,14 +206,14 @@ August to October 2026. Under the hackathon rules (Q-002 to Q-004), only the
 NEAR work done in the window is meant to be judged.
 
 - **Before the window (baseline).** Tag
-  [`pre-hackathon`](https://github.com/team607/xrp-poap/tree/pre-hackathon)
+  [`pre-hackathon`](https://github.com/fewForce/poap/tree/pre-hackathon)
   (`36edae3`, 15 October 2026) holds the XRPL server and pages: Xaman sign-in,
   the organiser console, the volunteer desk, event treasuries and vendors, and
   registering a wallet by signature. The phone app's baseline is commit
-  [`23033ba`](https://github.com/team607/xrp-poap/commit/23033ba): the app as
+  [`23033ba`](https://github.com/fewForce/poap/commit/23033ba): the app as
   it stood on 15 October, added under `mobile/` as one commit.
 - **During the window, 12 to 14 November 2026.** See
-  [the diff from `pre-hackathon` to `hackathon-submission`](https://github.com/team607/xrp-poap/compare/pre-hackathon...hackathon-submission).
+  [the diff from `pre-hackathon` to `hackathon-submission`](https://github.com/fewForce/poap/compare/pre-hackathon...hackathon-submission).
   - The NEAR badge contract, made upgradable, with its deploy, upgrade and
     end-to-end scripts.
   - NEAR as a second chain on the server: each event's chain is chosen when it
