@@ -347,6 +347,7 @@ select.in{appearance:none; -webkit-appearance:none; cursor:pointer;
 .taxon p+p{margin-top:.5em}
 .taxon b{color:var(--ink); font-weight:600}
 .taxon .in{background:var(--surface); max-width:260px}
+.in--chain{max-width:260px; font-family:var(--font-display); font-size:15px}
 .taxon__fixed{
   display:flex; gap:10px; align-items:baseline; flex-wrap:wrap;
   font-family:var(--font-mono); font-size:1.5rem; color:var(--ink); letter-spacing:.01em;
@@ -1091,17 +1092,13 @@ a{color:var(--jade)}
         <form class="form" id="event-form" novalidate>
 
           <div class="field" id="f-chain">
-            <span class="field__lbl" id="chain-lbl">Chain</span>
-            <!-- Two choices, both visible, like Status below. The chain is
-                 fixed once the event exists: a badge cannot move between
-                 chains. The hidden <select> carries the value. -->
-            <div class="choices" role="radiogroup" aria-labelledby="chain-lbl" id="chain-choices">
-              <button class="choice" type="button" role="radio" data-v="xrpl" aria-checked="true">XRP Ledger</button>
-              <button class="choice" type="button" role="radio" data-v="near" aria-checked="false">NEAR</button>
-            </div>
-            <select class="in" id="in-chain" name="chain" hidden aria-hidden="true" tabindex="-1">
-              <option value="xrpl">xrpl</option>
-              <option value="near">near</option>
+            <label class="field__lbl" id="chain-lbl" for="in-chain">Chain</label>
+            <!-- A dropdown on create. The chain is fixed once the event
+                 exists — a badge cannot move between chains — so on edit it
+                 is printed, not offered. -->
+            <select class="in in--chain" id="in-chain" name="chain">
+              <option value="xrpl">XRP Ledger</option>
+              <option value="near">NEAR</option>
             </select>
             <div class="taxon__fixed" id="chain-fixed" hidden>
               <span id="chain-fixed-v">&mdash;</span>
@@ -2293,17 +2290,15 @@ a{color:var(--jade)}
   }
 
   function paintChain() {
-    var v = $("in-chain").value;
-    var cs = document.querySelectorAll("#chain-choices .choice");
-    for (var i = 0; i < cs.length; i++) {
-      var c = cs[i];
-      var cv = c.getAttribute("data-v");
-      c.setAttribute("aria-checked", cv === v ? "true" : "false");
-      if (cv === "near") {
-        c.disabled = !nearAvailable();
-        c.title = c.disabled ? "NEAR is not set up on this server." : "";
-      }
+    var sel = $("in-chain");
+    // NEAR is offered only when this server can issue on it.
+    var nearOpt = sel.querySelector('option[value="near"]');
+    if (nearOpt) {
+      nearOpt.disabled = !nearAvailable();
+      nearOpt.textContent = nearOpt.disabled ? "NEAR (not set up on this server)" : "NEAR";
     }
+    if (sel.value === "near" && !nearAvailable() && formMode === "create") sel.value = "xrpl";
+    var v = sel.value;
     var help = CHAIN_HELP[v] || "";
     if (!nearAvailable() && formMode === "create") help += " NEAR is not set up on this server, so new events are XRPL.";
     setText("chain-help", help);
@@ -2380,7 +2375,7 @@ a{color:var(--jade)}
     show($("taxon-range"), !editing);
     // The chain, likewise: chosen on create, printed on edit.
     $("in-chain").value = editing ? (ev.chain || "xrpl") : "xrpl";
-    show($("chain-choices"), !editing);
+    show($("in-chain"), !editing);
     show($("chain-fixed"), Boolean(editing));
     setText("chain-fixed-v", CHAIN_NAME[$("in-chain").value] || "XRP Ledger");
     paintChain();
@@ -5098,12 +5093,7 @@ a{color:var(--jade)}
     $("btn-orders-prev").addEventListener("click", function () { loadOrders(Math.max(0, sales.offset - ORDER_PAGE)); });
     $("btn-orders-next").addEventListener("click", function () { loadOrders(sales.offset + ORDER_PAGE); });
     $("btn-sales-refresh").addEventListener("click", function () { loadSales(); loadOrders(sales.offset); });
-    var chainChoices = document.querySelectorAll("#chain-choices .choice");
-    for (var hi = 0; hi < chainChoices.length; hi++) {
-      (function (c) {
-        c.addEventListener("click", function () { setChain(c.getAttribute("data-v")); });
-      })(chainChoices[hi]);
-    }
+    $("in-chain").addEventListener("change", function () { setChain($("in-chain").value); });
     var choices = document.querySelectorAll("#status-choices .choice");
     for (var ci = 0; ci < choices.length; ci++) {
       (function (c) {
