@@ -41,6 +41,89 @@ signing and shows the badges it holds.
 - **Upgradable.** `update_contract` and `migrate` let the contract take new
   code without losing the badges it holds.
 
+### The flows on NEAR
+
+Compared with XRPL there is no offer and no accept: the desk mints straight into
+the attendee's account, and that mint is the attendance record. The details are
+in [docs/near-chain.md](docs/near-chain.md) (the contract and minting) and
+[docs/wallet-passes.md](docs/wallet-passes.md) (the pass).
+
+**1. Create.** The organiser picks NEAR, and the event id is chosen for them.
+
+```mermaid
+sequenceDiagram
+    actor Org as Organiser console
+    participant API as poap.live
+    participant NEAR as poap-live.near
+    Org->>API: new event, chain NEAR
+    API->>API: draw a nine-digit event id
+    API->>NEAR: event_title(event_id)
+    NEAR-->>API: null, so the id was never used
+    API-->>Org: the event, on NEAR for good
+```
+
+**2. Register.** A name, an email and a NEAR account. The pass goes out by email.
+
+```mermaid
+sequenceDiagram
+    actor Att as Attendee
+    participant API as poap.live
+    participant NEAR as NEAR RPC
+    participant Mail as Email
+    alt On the website
+        Att->>API: name, email, NEAR account
+        API->>NEAR: does the account exist?
+        NEAR-->>API: yes
+    else In the phone app
+        Att->>API: name, email, signature by the phone's key
+        Note right of API: The key is the NEAR implicit account,<br/>so the signature proves the account.
+    end
+    API->>API: registration, and a pass with a random token
+    API->>Mail: pass.pkpass, signed with the Pass Type ID certificate
+    Mail-->>Att: Add to Apple Wallet
+```
+
+**3. At the door.** The volunteer scans the pass and the badge is minted.
+
+```mermaid
+sequenceDiagram
+    actor Att as Attendee
+    actor Desk as Volunteer desk
+    participant API as poap.live
+    participant NEAR as poap-live.near
+    participant Apple as Apple push
+    alt Apple Wallet pass
+        Att->>Desk: QR code POAP-PASS:token
+        Desk->>API: POST /admin/api/desk/pass-scan
+        API->>API: a live pass for this event? replace its token
+        API-->>Desk: name and NEAR account
+    else Phone app
+        Att->>Desk: QR code of the app's NEAR account
+    end
+    Desk->>API: POST /events/eventId/claims
+    API->>NEAR: nft_mint, signed with the mint-only key
+    NEAR-->>API: token eventId:account, attendance recorded
+    API->>API: attendance row, registration checked in
+    API-->>Desk: badge minted
+    API->>Apple: push to the phone
+    Apple-->>Att: the pass shows a new code and Issued
+```
+
+**4. Prove it.** The badge is in the attendee's account, and the attendance stays
+on chain even if they burn it.
+
+```mermaid
+sequenceDiagram
+    actor Att as Attendee
+    actor Any as Anyone
+    participant NEAR as poap-live.near
+    Att->>NEAR: nft_tokens_for_owner(account)
+    NEAR-->>Att: the badge, in Meteor or the POAP app
+    Any->>NEAR: attendance(event_id, account_id)
+    NEAR-->>Any: the block and time of the mint
+    Note over Att,NEAR: Transfers are refused. A burn removes the token,<br/>not the attendance record.
+```
+
 ### Try it
 
 - **Is it live?** Open <https://poap.live/health>. You should see
@@ -125,21 +208,9 @@ Badges are minted with `tfBurnable` and never `tfTransferable`, so nobody can
 move one. Attendance is the accept transaction, not current ownership — a
 burned badge is still attendance.
 
-## Make Waves retrospective
-
-Team Mikky built this for the XRPL Commons Make Waves hackathon (June 21 to
-September 21, 2026), shipped it to mainnet as [poap.live](https://poap.live),
-and ran it at three real events: 805 badges on the ledger against 842
-registrations. The one-page retrospective is below. Click it for the PDF.
-
-[![Team Mikky, Make Waves hackathon retrospective: executive summary, the three events, revenue model, user life cycle, prospective engagements, commitments and app screenshots](docs/retrospective/team-mikky-make-waves-retrospective.png)](docs/retrospective/Team_Mikky_Make_Waves_Retrospective.pdf)
-
-[PDF](docs/retrospective/Team_Mikky_Make_Waves_Retrospective.pdf) ·
-[HTML source](docs/retrospective/Team_Mikky_Make_Waves_Retrospective.html)
-(download and open in a browser) ·
-[Demo video](https://drive.google.com/file/d/1mfVpwLavgpGFNMsiCdkrrosaxy6vTnqc/view):
-an attendee's badge and the rewards collected with it, side by side with the
-vendor flow
+The XRPL Commons Make Waves hackathon retrospective (June to September 2026,
+three real events, 805 badges on the XRP Ledger) is in
+[docs/make-waves-retrospective.md](docs/make-waves-retrospective.md).
 
 ## Run it
 
