@@ -3121,20 +3121,20 @@ a{color:var(--jade)}
     row.style.gap = "4px";
     var dead = status === "revoked" || status === "expired";
     if (reg.email && !dead && passes.caps && passes.caps.email) {
-      row.appendChild(tinyBtn(p && p.deliveredAt ? "Resend" : "Send", function () { passAction(reg, "send"); }));
+      row.appendChild(passBtn(p && p.deliveredAt ? "Resend" : "Send", function () { passAction(reg, "send"); }));
     }
     var dl = node("a", "btn btn--tiny btn--ghost", "Download");
     dl.href = "/admin/api/registrations/" + encodeURIComponent(reg.id) + "/wallet-pass.pkpass";
     dl.setAttribute("download", "pass.pkpass");
     row.appendChild(dl);
     if (status === "pending" || status === "issued") {
-      row.appendChild(tinyBtn("Suspend", function () {
+      row.appendChild(passBtn("Suspend", function () {
         passAction(reg, "suspend", "Suspend this pass? It stays on their phone marked SUSPENDED, and the desk will refuse it until you reinstate it.");
       }));
     }
-    if (status === "suspended") row.appendChild(tinyBtn("Reinstate", function () { passAction(reg, "reinstate"); }));
+    if (status === "suspended") row.appendChild(passBtn("Reinstate", function () { passAction(reg, "reinstate"); }));
     if (p && !dead) {
-      row.appendChild(tinyBtn("Revoke", function () {
+      row.appendChild(passBtn("Revoke", function () {
         passAction(reg, "revoke", "Revoke this pass for good? It is voided on their phone and the desk will refuse it. This cannot be undone.");
       }));
     }
@@ -3142,7 +3142,9 @@ a{color:var(--jade)}
     return td;
   }
 
-  function tinyBtn(label, onClick) {
+  // Not "tinyBtn": the vendors section below declares one with a different
+  // signature in this same scope, and the later declaration wins.
+  function passBtn(label, onClick) {
     var b = node("button", "btn btn--tiny btn--ghost", label);
     b.type = "button";
     b.addEventListener("click", onClick);
