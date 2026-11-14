@@ -425,6 +425,7 @@ tr[data-draft="1"] .taxonno{color:var(--ink-3)}
 .pill--closed{color:var(--ink-3); background:var(--sunk); border-color:var(--rule-2)}
 .pill--xaman{color:var(--jade); border-color:var(--jade); background:var(--jade-wash)}
 .pill--self{color:var(--signal); border-color:var(--signal-2); border-style:dashed; background:var(--signal-wash)}
+.pill--bad{color:var(--vermilion); border-color:var(--vermilion); background:transparent}
 .tag-hidden{ font-size:12.5px; font-weight:600;
   color:var(--signal); background:var(--signal-wash); border-radius:999px; padding:3px 11px; white-space:nowrap;
 }
@@ -1509,6 +1510,7 @@ a{color:var(--jade)}
                 <th>email</th>
                 <th>registered</th>
                 <th>checked in</th>
+                <th>wallet pass</th>
               </tr>
             </thead>
             <tbody id="regs-rows"></tbody>
@@ -3018,7 +3020,7 @@ a{color:var(--jade)}
     show($("regs-empty"), false);
     var tr = node("tr");
     var td = node("td");
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.appendChild(node("span", "skel", "reading registrations"));
     tr.appendChild(td);
     body.appendChild(tr);
@@ -3053,7 +3055,103 @@ a{color:var(--jade)}
       setText("c-checked", String(regs.checkedIn));
       paintShortfall();
       paintRegs();
+      loadPasses(eventId, gen);
     });
+  }
+
+  /* ---- Apple Wallet passes ------------------------------------------------
+     GET /admin/api/events/{id}/wallet-passes answers 404 when the server has
+     no pass certificate: the column then says so and offers nothing. */
+  var passes = { byReg: {}, off: false, caps: null };
+
+  function loadPasses(eventId, gen) {
+    api("GET", "/admin/api/events/" + encodeURIComponent(eventId) + "/wallet-passes").then(function (r) {
+      if (gen !== detailGen) return;
+      passes.byReg = {};
+      passes.off = !r.ok;
+      passes.caps = r.ok && r.json ? r.json.capabilities : null;
+      var list = (r.ok && r.json && r.json.passes) || [];
+      for (var i = 0; i < list.length; i++) if (list[i]) passes.byReg[list[i].registrationId] = list[i];
+      paintRegs();
+    });
+  }
+
+  var PASS_PILL = {
+    pending: ["pill pill--self", "not sent"],
+    issued: ["pill pill--xaman", "issued"],
+    suspended: ["pill pill--self", "suspended"],
+    revoked: ["pill pill--bad", "revoked"],
+    expired: ["pill pill--bad", "expired"]
+  };
+
+  function passAction(reg, action, confirmText) {
+    if (confirmText && !window.confirm(confirmText)) return;
+    var path = "/admin/api/registrations/" + encodeURIComponent(reg.id) + "/wallet-pass/" + action;
+    api("POST", path).then(function (r) {
+      if (!r.ok) {
+        flash("detail-flash", "bad", String(r.status), messageOf(r) || "The pass action did not go through.");
+      } else if (action === "send") {
+        flash("detail-flash", "ok", "sent", "The Wallet pass was emailed to " + (reg.email || "the attendee") + ".");
+      }
+      if (current) loadPasses(current.eventId, detailGen);
+    });
+  }
+
+  function passCell(reg) {
+    var td = node("td");
+    if (passes.off) { td.className = "td-dim"; td.appendChild(document.createTextNode("off")); return td; }
+    var p = passes.byReg[reg.id];
+    var status = p ? p.status : null;
+    if (p) {
+      var pill = PASS_PILL[status] || PASS_PILL.pending;
+      var el = node("span", pill[0], pill[1]);
+      el.title = p.deliveryError ? ("Last email failed: " + p.deliveryError)
+        : p.deliveredAt ? ("Emailed " + fmtStamp(p.deliveredAt)) : "";
+      td.appendChild(el);
+      if (p.devices) td.appendChild(node("span", "td-dim", " · on " + p.devices + (p.devices === 1 ? " phone" : " phones")));
+      if (p.deliveryError) {
+        var bad = node("div", null, "email failed");
+        bad.style.color = "var(--vermilion)";
+        bad.style.fontSize = "12px";
+        bad.title = p.deliveryError;
+        td.appendChild(bad);
+      }
+    } else {
+      td.appendChild(node("span", "td-dim", "none yet"));
+    }
+    var row = node("div");
+    row.style.marginTop = "6px";
+    row.style.display = "flex";
+    row.style.flexWrap = "wrap";
+    row.style.gap = "4px";
+    var dead = status === "revoked" || status === "expired";
+    if (reg.email && !dead && passes.caps && passes.caps.email) {
+      row.appendChild(tinyBtn(p && p.deliveredAt ? "Resend" : "Send", function () { passAction(reg, "send"); }));
+    }
+    var dl = node("a", "btn btn--tiny btn--ghost", "Download");
+    dl.href = "/admin/api/registrations/" + encodeURIComponent(reg.id) + "/wallet-pass.pkpass";
+    dl.setAttribute("download", "pass.pkpass");
+    row.appendChild(dl);
+    if (status === "pending" || status === "issued") {
+      row.appendChild(tinyBtn("Suspend", function () {
+        passAction(reg, "suspend", "Suspend this pass? It stays on their phone marked SUSPENDED, and the desk will refuse it until you reinstate it.");
+      }));
+    }
+    if (status === "suspended") row.appendChild(tinyBtn("Reinstate", function () { passAction(reg, "reinstate"); }));
+    if (p && !dead) {
+      row.appendChild(tinyBtn("Revoke", function () {
+        passAction(reg, "revoke", "Revoke this pass for good? It is voided on their phone and the desk will refuse it. This cannot be undone.");
+      }));
+    }
+    td.appendChild(row);
+    return td;
+  }
+
+  function tinyBtn(label, onClick) {
+    var b = node("button", "btn btn--tiny btn--ghost", label);
+    b.type = "button";
+    b.addEventListener("click", onClick);
+    return b;
   }
 
   /**
@@ -3164,6 +3262,8 @@ a{color:var(--jade)}
       tdIn.appendChild(document.createTextNode("not yet"));
     }
     tr.appendChild(tdIn);
+
+    tr.appendChild(passCell(reg));
 
     return tr;
   }

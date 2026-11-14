@@ -1117,6 +1117,8 @@ export async function markArrival(
   address: string,
   log: FastifyBaseLogger,
 ): Promise<void> {
+  // The Wallet pass, if they have one, now says the badge is issued.
+  deps.walletPasses?.onBadgeIssued(eventId, address);
   if (!deps.registrations) return;
   try {
     const registration = await deps.registrations.findByAddress(eventId, address);

@@ -25,6 +25,7 @@ import type {
   PurchaseRepository,
   RegistrationRepository,
   InviteeRepository,
+  WalletPassRepository,
   Roster,
   SessionStore,
   TreasuryRepository,
@@ -48,6 +49,8 @@ import { NullSignInService, XummSignInService, type SignInService } from "../xam
 import { assertDemoAllowed, type DemoOptions } from "./demo-state.js";
 import { REDACTED, redactDetails, scrubSecrets } from "./http-errors.js";
 import type { AdminGuard } from "./routes/events.js";
+import { withWalletPasses, type WalletPassService } from "../wallet/service.js";
+import { announceWalletPasses, createWalletPassService } from "../wallet/setup.js";
 
 // ---------------------------------------------------------------------------
 // Ledger operations
@@ -396,6 +399,12 @@ export interface ApiDeps {
   registrations?: RegistrationRepository;
   /** The invite list the volunteer app checks emails against (the event's page in /admin). */
   invitees?: InviteeRepository;
+  /**
+   * Apple Wallet passes for registrations (src/wallet). Present when a pass
+   * certificate is configured; absent, the routes are not registered and
+   * registering makes no pass.
+   */
+  walletPasses?: WalletPassService;
   /**
    * Xaman SignIn — how an attendee proves the wallet they are registering.
    *
@@ -757,6 +766,7 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
   let eventPhotos: EventPhotoRepository;
   let registrations: RegistrationRepository;
   let invitees: InviteeRepository;
+  let walletPassRepo: WalletPassRepository;
   let disposeStores: (() => Promise<void>) | undefined;
 
   if (config.databaseUrl) {
@@ -772,6 +782,7 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
     events = new db.PgEventRepository(pool);
     registrations = new db.PgRegistrationRepository(pool);
     invitees = new db.PgInviteeRepository(pool);
+    walletPassRepo = new db.PgWalletPassRepository(pool);
     eventPhotos = new db.PgEventPhotoRepository(pool);
     disposeStores = () => db.closePool(pool);
   } else {
@@ -790,6 +801,7 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
     events = new db.MemoryEventRepository(attendance);
     registrations = new db.MemoryRegistrationRepository(events);
     invitees = new db.MemoryInviteeRepository();
+    walletPassRepo = new db.MemoryWalletPassRepository();
     eventPhotos = new db.MemoryEventPhotoRepository();
     // Both carry a foreign key to events in Postgres, and check it here too.
     allowances = new db.MemoryAllowanceLedger({ events });
@@ -892,10 +904,26 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
   const near = config.near ? createNearGateway(config.near) : undefined;
   announceNearMode(config);
 
+  // Apple Wallet passes. Every registration store write makes a pass, through
+  // the wrapper, so each registration route gets one without answering differently.
+  const walletPasses = config.walletPasses
+    ? createWalletPassService({
+        config: config.walletPasses,
+        ...(config.smtp ? { smtp: config.smtp } : {}),
+        repo: walletPassRepo,
+        registrations,
+        events,
+        attendance,
+      })
+    : undefined;
+  if (walletPasses) registrations = withWalletPasses(registrations, walletPasses);
+  announceWalletPasses(walletPasses, config.walletPasses);
+
   const deps: ApiDeps = {
     config,
     gateway,
     ...(near ? { near } : {}),
+    ...(walletPasses ? { walletPasses } : {}),
     attendance,
     claims,
     allowances,
@@ -930,6 +958,8 @@ export async function buildDeps(config: AppConfig): Promise<BuiltDeps> {
     deps,
     async close(): Promise<void> {
       try {
+        // Emails and pushes already under way finish before the stores close.
+        await walletPasses?.idle();
         await gateway.disconnect();
       } finally {
         if (disposeStores) await disposeStores();

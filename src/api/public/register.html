@@ -2117,6 +2117,17 @@ a{color:var(--jade)}
       ? "Open your pass at " + venue + " and show it to whoever is on the door: your badge goes straight into this NEAR account. It is yours to keep, and it cannot be passed on to anyone else."
       : "Bring this wallet to " + venue + ", show it to whoever is on the door, and your badge is handed straight to it. It is yours to keep, and it cannot be passed on to anyone else.");
 
+    /* An Apple Wallet pass is emailed when the server can send one and they
+       gave an email: say so, so they know to look for it. */
+    var typedEmail = ($("em") && $("em").value || "").trim();
+    var wp = app.health && app.health.walletPasses;
+    if (wp && wp.email && typedEmail && !already) {
+      var nx = $("done-next");
+      nx.appendChild(document.createTextNode(" "));
+      nx.appendChild(node("b", null, "Your Apple Wallet pass is on its way to " + typedEmail + "."));
+      nx.appendChild(document.createTextNode(" Add it to Wallet and show it at the desk instead."));
+    }
+
     /* The pass, for this event, on this phone. Registering and turning up are
        two different days for most people — but they are the same minute for
        anyone registering IN the queue, and that person should not have to find

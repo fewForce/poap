@@ -31,6 +31,7 @@ import { registerTreasuryRoutes } from "./routes/treasury.js";
 import { registerInviteeRoutes } from "./routes/invitees.js";
 import { registerVendorPortalRoutes } from "./routes/vendor-portal.js";
 import { registerVendorRoutes } from "./routes/vendors.js";
+import { registerWalletPassRoutes } from "./routes/wallet-passes.js";
 import { registerVerifyRoute } from "./routes/verify.js";
 import { registerXamanWebhookRoute } from "./routes/xaman-webhook.js";
 
@@ -114,6 +115,15 @@ export function buildServer(deps: ApiDeps): FastifyInstance {
   registerDeskRoutes(app, deps);
 
   /**
+   * APPLE WALLET PASSES. Apple's web service (/api/passes/v1), the emailed
+   * download link, and the console's and desk's pass routes under /admin/api,
+   * which the prefix guard above covers. Outside the rate limiter for the
+   * desk's reason: Wallet polls, and a desk scans a queue of passes. No-ops
+   * when no pass certificate is configured.
+   */
+  registerWalletPassRoutes(app, deps);
+
+  /**
    * GET /health — 200, always, with no ledger call. A health check that needs a
    * working WebSocket connection to a public Clio server tells you about the
    * public Clio server, not about this process.
@@ -129,6 +139,9 @@ export function buildServer(deps: ApiDeps): FastifyInstance {
       // than sent as null when unset, so "no tag" and "tag 0" stay different.
       ...(deps.config.sourceTag === undefined ? {} : { sourceTag: deps.config.sourceTag }),
       xamanConfigured: Boolean(deps.config.xumm.apiKey && deps.config.xumm.apiSecret),
+      // Present only when Apple Wallet passes are set up, so a server without
+      // them answers exactly as before. `email`: registering emails the pass.
+      ...(deps.walletPasses ? { walletPasses: { email: deps.walletPasses.capabilities.email } } : {}),
       // Which chains an event here can be on. `near` carries what a page or
       // the app needs to read badges off NEAR itself: the network, the badge
       // contract and an RPC endpoint. The minter key is not in it.

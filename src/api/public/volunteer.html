@@ -511,7 +511,8 @@ a.btn--go{color:var(--on-signal)}
 .docket[data-verdict="attended"]::before{background:var(--jade)}
 .docket[data-verdict="fund"]::before,
 .docket[data-verdict="waiting"]::before{background:var(--signal)}
-.docket[data-verdict="error"]::before{background:var(--vermilion)}
+.docket[data-verdict="error"]::before,
+.docket[data-verdict="passrefused"]::before{background:var(--vermilion)}
 .docket__body{padding:clamp(16px,2.4vw,26px); flex:1; min-width:0}
 .stampwrap{display:flex; gap:clamp(14px,2.4vw,28px); align-items:flex-start; flex-wrap:wrap}
 .stamp{
@@ -544,6 +545,8 @@ a.btn--go{color:var(--on-signal)}
 .docket[data-verdict="attended"] .stamp__w{color:var(--jade)}
 .docket[data-verdict="error"] .stamp__w{color:var(--vermilion)}
 .docket[data-verdict="error"] .stamp{color:var(--vermilion)}
+.docket[data-verdict="passrefused"] .stamp,
+.docket[data-verdict="passrefused"] .stamp__w{color:var(--vermilion)}
 /* Nothing scanned yet is not a state to draw attention to. */
 .docket[data-verdict="empty"] .stamp .stamp__w{color:var(--ink-3)}
 .docket[data-verdict="looking"] .stamp__g{animation:blink 1s steps(2) infinite}
@@ -2147,7 +2150,57 @@ a{color:var(--jade)}
   /* =====================================================================
      Looking one attendee up, and deciding what the desk should do about them.
      ===================================================================== */
+  /* =====================================================================
+     A Wallet pass. Its QR is POAP-PASS:<token>, not an address: the server
+     says whose pass it is (and replaces the code, so a screenshot cannot be
+     used twice), then the desk carries on exactly as if their account had
+     been scanned.
+     ===================================================================== */
+  var PASS_PREFIX = "POAP-PASS:";
+  var passRefusal = null;      // the server's answer when it refused a pass
+
+  function submitPass(raw, source) {
+    stopWatch();
+    currentRawScan = String(raw).trim();
+    current = "";
+    $("addr").value = "";
+    if (eventId() == null) {
+      look = null;
+      lookRaw = noEventFailure();
+      verdict = "error";
+      paintDocket({ failed: lookRaw, failedWhat: "lookup" });
+      return Promise.resolve(lookRaw);
+    }
+    verdict = "looking";
+    paintDocket({ source: source, how: "pass" });
+    return api("POST", "/admin/api/desk/pass-scan", { eventId: eventId(), code: currentRawScan }).then(function (r) {
+      if (!r.ok) {
+        look = null;
+        lookRaw = r;
+        verdict = "error";
+        paintDocket({ failed: r, failedWhat: "lookup" });
+        return r;
+      }
+      var j = r.json || {};
+      if (!j.valid) {
+        look = null;
+        lookRaw = null;
+        passRefusal = j;
+        verdict = "passrefused";
+        paintDocket();
+        return r;
+      }
+      current = j.address;
+      $("addr").value = j.address;
+      return lookup(j.address).then(function () {
+        var b = $("act-primary");
+        if (b) { try { b.focus(); } catch (e) { /* nothing focusable */ } }
+      });
+    });
+  }
+
   function submit(raw, source) {
+    if (String(raw == null ? "" : raw).trim().indexOf(PASS_PREFIX) === 0) return submitPass(raw, source);
     var n = normalise(raw);
     if (!n.value) {
       $("addr").focus();
@@ -2376,7 +2429,8 @@ a{color:var(--jade)}
     ready:    ["→", "Ready", "Clear to issue"],
     waiting:  ["◌", "Waiting on their phone", "Sent to the attendee"],
     error:    ["✕", "Try again", "Nothing was issued"],
-    noaccount: ["?", "No such account", "Nobody holds that NEAR name"]
+    noaccount: ["?", "No such account", "Nobody holds that NEAR name"],
+    passrefused: ["✕", "Pass refused", "No badge from this code"]
   };
 
   /**
@@ -2623,6 +2677,29 @@ a{color:var(--jade)}
       acts.appendChild(actBtn("act-focus", "Enter an address", "btn--go", function () { $("addr").focus(); $("addr").select(); }));
       acts.appendChild(node("span", "spacer"));
       acts.appendChild(actBtn("act-refresh", "Refresh console", "btn--tiny btn--ghost", function () { loadState(); }));
+      return;
+    }
+
+    if (verdict === "looking" && opts.how === "pass") {
+      body.appendChild(stampBlock("Checking this Wallet pass, then looking up whose it is."));
+      acts.appendChild(nextBtn());
+      return;
+    }
+
+    if (verdict === "passrefused") {
+      var why = passRefusal || {};
+      body.appendChild(stampBlock(
+        why.result === "stale"
+          ? "<b>This pass's code was already used.</b> It changes after every scan, so this is an old one — or a screenshot."
+          : why.result === "other_event"
+            ? "<b>This pass is for another event</b> (" + String(why.eventId) + "). Check the event picked at the top."
+            : why.result === "suspended" || why.result === "revoked" || why.result === "expired"
+              ? "<b>This pass has been " + why.result + "</b> by the organiser. No badge from this pass."
+              : "<b>This is not one of our passes</b>, or its code has been replaced since."));
+      if (why.message) body.appendChild(node("p", "say", String(why.message)));
+      acts.appendChild(actBtn("act-primary", "Scan again", "btn--go", reset));
+      acts.appendChild(node("span", "spacer"));
+      acts.appendChild(actBtn("act-edit", "Type their account", "btn--ghost", function () { $("addr").focus(); }));
       return;
     }
 

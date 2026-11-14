@@ -88,6 +88,7 @@ export {
 
 export { PgRegistrationRepository } from "./registration-repo.js";
 export { PgInviteeRepository, MemoryInviteeRepository } from "./invitee-repo.js";
+export { PgWalletPassRepository, MemoryWalletPassRepository } from "./wallet-pass-repo.js";
 
 /**
  * Event photographs. `assertUsablePhotoUrl` is exported beside the repository

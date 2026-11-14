@@ -858,6 +858,9 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
       }
 
       const updated = await events.update(eventId, patch);
+      // Wallet passes follow the event: a close expires them, a new name, date
+      // or place updates them on every phone. After the answer, never failing it.
+      deps.walletPasses?.onEventChanged(existing, updated);
       return reply.code(200).send({ event: updated });
     },
   );

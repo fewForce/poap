@@ -2,7 +2,8 @@
 
 XRPL NFT layer for a POAP-style attendance app, with NEAR as a second chain:
 each event is on one chain, chosen when it is created (`events.chain`). The
-NEAR design and how to deploy it are in `docs/near-chain.md`.
+NEAR design and how to deploy it are in `docs/near-chain.md`. Registrations
+can carry Apple Wallet passes, scanned at the desk: `docs/wallet-passes.md`.
 
 The original spec (`xrpl-nft-layer-brief.md`) has been removed; it is in git
 history at commit 4720bd5 if you need it. Its settled decisions are restated
@@ -33,7 +34,9 @@ the brief, and measure again rather than reasoning from it.
   `tfBurnable` on mint and `tfSellNFToken` on create-offer.
 - **The issuer seed never leaves the server.** Not in logs, not in responses,
   not in errors. The same goes for `NEAR_MINTER_PRIVATE_KEY`, which is a
-  function-call key that may only call `nft_mint`.
+  function-call key that may only call `nft_mint`, and for the Apple pass
+  certificate's key and password (`APPLE_PASS_*`). A pass's token and
+  download key never appear in a log or the console either.
 - **An XRPL event behaves exactly as before.** Every NEAR path is a branch on
   `event.chain === "near"`; the XRPL side of a route keeps its old schema and
   its old answers.

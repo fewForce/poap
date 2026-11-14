@@ -58,6 +58,33 @@ export const NEAR_RPC_DEFAULTS: Record<NearNetwork, string> = {
   mainnet: "https://rpc.mainnet.fastnear.com",
 };
 
+/**
+ * Where the Pass Type ID certificate is: a .p12 as Keychain Access exports
+ * it, or the PEM pair (certificate, and the private key, encrypted or not).
+ * Paths, read at startup; the passwords never leave this process.
+ */
+export interface WalletPassConfig {
+  p12Path?: string;
+  p12Password?: string;
+  certificatePath?: string;
+  privateKeyPath?: string;
+  keyPassword?: string;
+  /** Where the server is reached: download links, and the web service Wallet updates from (https only). */
+  publicUrl: string;
+  /** Shown on the lock screen and in Wallet's notifications. */
+  organizationName: string;
+}
+
+export interface SmtpSettings {
+  host: string;
+  port: number;
+  secure: boolean;
+  user?: string;
+  password?: string;
+  from: string;
+  fromName: string;
+}
+
 export interface AppConfig {
   endpoint: string;
   fallbackEndpoints: string[];
@@ -68,6 +95,10 @@ export interface AppConfig {
   reward: RewardConfig;
   /** NEAR, when the operator has set it up. See NearConfig. */
   near?: NearConfig;
+  /** Apple Wallet passes (src/wallet), when a Pass Type ID certificate is configured. */
+  walletPasses?: WalletPassConfig;
+  /** An SMTP server to email passes through. Optional even with passes: they can still be downloaded. */
+  smtp?: SmtpSettings;
   pinata: { jwt?: string; gateway: string };
   xumm: { apiKey?: string; apiSecret?: string };
   databaseUrl?: string;
@@ -328,6 +359,8 @@ export function loadConfig(options: LoadConfigOptions = {}): AppConfig {
     issuerSeed,
     reward: rewardConfig(),
     ...nearConfigOrNothing(),
+    ...walletPassConfigOrNothing(),
+    ...smtpConfigOrNothing(),
     pinata: { jwt: env("PINATA_JWT"), gateway: env("PINATA_GATEWAY") ?? "https://gateway.pinata.cloud" },
     xumm: { apiKey: env("XUMM_API_KEY"), apiSecret: env("XUMM_API_SECRET") },
     databaseUrl: env("DATABASE_URL"),
@@ -407,6 +440,58 @@ function nearConfigOrNothing(): { near?: NearConfig } {
   };
 }
 
+/**
+ * APPLE_PASS_* settings. Either a .p12 (APPLE_PASS_P12_PATH and its password)
+ * or the PEM pair (APPLE_PASS_CERTIFICATE_PATH, APPLE_PASS_PRIVATE_KEY_PATH,
+ * and APPLE_PASS_KEY_PASSWORD when the key is encrypted). Half a pair is a
+ * startup error. WALLET_PASS_PUBLIC_URL defaults to BADGE_BASE_URL.
+ */
+function walletPassConfigOrNothing(): { walletPasses?: WalletPassConfig } {
+  const p12Path = env("APPLE_PASS_P12_PATH");
+  const certificatePath = env("APPLE_PASS_CERTIFICATE_PATH");
+  const privateKeyPath = env("APPLE_PASS_PRIVATE_KEY_PATH");
+  if (!p12Path && !certificatePath && !privateKeyPath) return {};
+  if (!p12Path && (!certificatePath || !privateKeyPath)) {
+    throw new ConfigError(
+      "Apple Wallet passes are half set up: set APPLE_PASS_CERTIFICATE_PATH and APPLE_PASS_PRIVATE_KEY_PATH together, or APPLE_PASS_P12_PATH.",
+    );
+  }
+  const publicUrl = env("WALLET_PASS_PUBLIC_URL") ?? env("BADGE_BASE_URL");
+  if (!publicUrl || !/^https?:\/\//.test(publicUrl)) {
+    throw new ConfigError("Apple Wallet passes need WALLET_PASS_PUBLIC_URL (or BADGE_BASE_URL): where this server is reached.");
+  }
+  return {
+    walletPasses: {
+      ...(p12Path ? { p12Path, p12Password: env("APPLE_PASS_P12_PASSWORD") ?? "" } : {}),
+      ...(certificatePath ? { certificatePath } : {}),
+      ...(privateKeyPath ? { privateKeyPath } : {}),
+      ...(env("APPLE_PASS_KEY_PASSWORD") ? { keyPassword: env("APPLE_PASS_KEY_PASSWORD") } : {}),
+      publicUrl: publicUrl.replace(/\/+$/, ""),
+      organizationName: env("WALLET_PASS_ORGANIZATION_NAME") ?? "feooh",
+    },
+  };
+}
+
+/** SMTP_HOST and MAIL_FROM, or neither. */
+function smtpConfigOrNothing(): { smtp?: SmtpSettings } {
+  const host = env("SMTP_HOST");
+  const from = env("MAIL_FROM");
+  if (!host && !from) return {};
+  if (!host || !from) throw new ConfigError("Email is half set up: set SMTP_HOST and MAIL_FROM together.");
+  const port = int("SMTP_PORT", 587);
+  return {
+    smtp: {
+      host,
+      port,
+      secure: bool("SMTP_SECURE", port === 465),
+      ...(env("SMTP_USER") ? { user: env("SMTP_USER") } : {}),
+      ...(env("SMTP_PASSWORD") ? { password: env("SMTP_PASSWORD") } : {}),
+      from,
+      fromName: env("MAIL_FROM_NAME") ?? "POAP",
+    },
+  };
+}
+
 /** Redacted view, safe to log. */
 export function describeConfig(cfg: AppConfig): Record<string, unknown> {
   return {
@@ -428,6 +513,17 @@ export function describeConfig(cfg: AppConfig): Record<string, unknown> {
           minterAccountId: cfg.near.minterAccountId,
           minterPrivateKey: "[redacted]",
         }
+      : "[unset]",
+    walletPasses: cfg.walletPasses
+      ? {
+          source: cfg.walletPasses.p12Path ? "p12" : "pem",
+          publicUrl: cfg.walletPasses.publicUrl,
+          organizationName: cfg.walletPasses.organizationName,
+          password: cfg.walletPasses.p12Password || cfg.walletPasses.keyPassword ? "[redacted]" : "[unset]",
+        }
+      : "[unset]",
+    smtp: cfg.smtp
+      ? { host: cfg.smtp.host, port: cfg.smtp.port, secure: cfg.smtp.secure, from: cfg.smtp.from, password: cfg.smtp.password ? "[redacted]" : "[unset]" }
       : "[unset]",
     pinata: { jwt: cfg.pinata.jwt ? "[redacted]" : "[unset]", gateway: cfg.pinata.gateway },
     xumm: {

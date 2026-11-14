@@ -814,6 +814,134 @@ export interface RegistrationRepository {
 }
 
 // ---------------------------------------------------------------------------
+// Apple Wallet passes (src/wallet, docs/wallet-passes.md)
+//
+// One pass per registration. Its QR carries a token that changes every time
+// the desk scans it, and the pass on the phone updates itself through Apple's
+// web service: a push, then the phone fetches the new pass.
+// ---------------------------------------------------------------------------
+
+/**
+ * pending: made, not yet delivered. issued: emailed or downloaded. suspended:
+ * stays on the phone marked SUSPENDED, refused at the desk, reversible.
+ * revoked and expired: voided on the phone, refused at the desk, final.
+ */
+export type WalletPassStatus = "pending" | "issued" | "suspended" | "revoked" | "expired";
+
+export interface WalletPassRecord {
+  id: string;
+  registrationId: string;
+  eventId: EventId;
+  /** A uuid. Apple's serialNumber, and how the web service names the pass. */
+  serialNumber: string;
+  /**
+   * What the QR carries (as `POAP-PASS:<token>`) and what the phone sends as
+   * `Authorization: ApplePass <token>`. Replaced on every desk scan.
+   */
+  authenticationToken: string;
+  /** The token before the last scan: the phone still holds it until it fetches the new pass. */
+  previousAuthenticationToken: string | null;
+  /** In the download link sent by email. Never changes, never in the pass. */
+  downloadKey: string;
+  status: WalletPassStatus;
+  issuedAt: Date | null;
+  suspendedAt: Date | null;
+  revokedAt: Date | null;
+  expiredAt: Date | null;
+  /** When the last email went out, and why the last one failed, if it did. */
+  deliveredAt: Date | null;
+  deliveryError: string | null;
+  createdAt: Date;
+  /** Bumped by every change the phone should fetch. The web service answers from it. */
+  updatedAt: Date;
+}
+
+export type WalletPassPatch = Partial<
+  Pick<
+    WalletPassRecord,
+    | "authenticationToken"
+    | "previousAuthenticationToken"
+    | "status"
+    | "issuedAt"
+    | "suspendedAt"
+    | "revokedAt"
+    | "expiredAt"
+    | "deliveredAt"
+    | "deliveryError"
+  >
+>;
+
+export interface WalletPassDevice {
+  passId: string;
+  deviceLibraryIdentifier: string;
+  pushToken: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type WalletPassScanResult = "valid" | "stale" | "invalid" | "other_event" | "suspended" | "revoked" | "expired";
+
+export type WalletPushEvent =
+  | "token_rotation"
+  | "badge_issued"
+  | "suspension"
+  | "revocation"
+  | "reinstatement"
+  | "expiry"
+  | "event_update";
+
+export interface WalletPassRepository {
+  /** Inserts, or returns the registration's existing pass: one pass per registration. */
+  create(input: {
+    registrationId: string;
+    eventId: EventId;
+    serialNumber: string;
+    authenticationToken: string;
+    downloadKey: string;
+  }): Promise<WalletPassRecord>;
+  findById(id: string): Promise<WalletPassRecord | null>;
+  findByRegistration(registrationId: string): Promise<WalletPassRecord | null>;
+  findBySerial(serialNumber: string): Promise<WalletPassRecord | null>;
+  /** Matches the current token, or the previous one (`stale: true`). */
+  findByToken(token: string): Promise<{ pass: WalletPassRecord; stale: boolean } | null>;
+  listByEvent(eventId: EventId): Promise<WalletPassRecord[]>;
+  /** Applies the patch and bumps updated_at. */
+  update(id: string, patch: WalletPassPatch): Promise<WalletPassRecord>;
+  /** Bumps updated_at on every pass of the event: the event's name, date or place changed. */
+  touchEvent(eventId: EventId): Promise<void>;
+  registerDevice(passId: string, deviceLibraryIdentifier: string, pushToken: string): Promise<"created" | "updated">;
+  unregisterDevice(passId: string, deviceLibraryIdentifier: string): Promise<void>;
+  devicesFor(passId: string): Promise<WalletPassDevice[]>;
+  /** The device's passes changed after `since` (all of them when null), or null when none did. */
+  updatedSerials(
+    deviceLibraryIdentifier: string,
+    since: Date | null,
+  ): Promise<{ serialNumbers: string[]; lastUpdated: Date } | null>;
+  logScan(entry: {
+    passId: string | null;
+    eventId: EventId | null;
+    tokenHash: string;
+    result: WalletPassScanResult;
+    ipAddress: string | null;
+  }): Promise<void>;
+  logPush(entry: {
+    passId: string;
+    pushToken: string;
+    event: WalletPushEvent;
+    statusCode: number | null;
+    errorReason: string | null;
+  }): Promise<void>;
+  logApi(entry: {
+    passId: string | null;
+    method: string;
+    endpoint: string;
+    responseStatus: number;
+    timingMs: number;
+    ipAddress: string | null;
+  }): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
 // Admin auth
 //
 // One operator account, credentials from the environment. No users table: a
