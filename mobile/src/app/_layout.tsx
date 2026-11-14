@@ -5,7 +5,8 @@
  *
  * There is no sign-in. The first launch opens on the welcome screen — make a
  * wallet, or bring one in — and after that on the events. The splash screen
- * stays up until the fonts, the settings, the lock and the wallets have been read.
+ * stays up until the fonts, the settings, the lock and the wallets have been read,
+ * and for at least a second, so it is seen rather than flashed.
  */
 import { IBMPlexMono_400Regular, IBMPlexMono_500Medium } from "@expo-google-fonts/ibm-plex-mono";
 import {
@@ -35,6 +36,10 @@ import { WalletProvider, useWalletState } from "@/lib/wallet";
 
 void SplashScreen.preventAutoHideAsync();
 
+/** The splash stays up at least this long after the app's code starts, however quickly it is ready. */
+const MIN_SPLASH_MS = 1000;
+const startedAt = Date.now();
+
 /** Over everything while the app is on testnet, so a test badge is never taken for a real one. */
 function TestnetStrip() {
   const theme = useTheme();
@@ -58,7 +63,9 @@ function Root() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
   useEffect(() => {
-    if (status !== "loading") SplashScreen.hide();
+    if (status === "loading") return;
+    const timer = setTimeout(() => SplashScreen.hide(), Math.max(0, MIN_SPLASH_MS - (Date.now() - startedAt)));
+    return () => clearTimeout(timer);
   }, [status]);
 
   if (status === "loading") return null;

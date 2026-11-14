@@ -8,7 +8,8 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "live.poap.wallet"
+      "bundleIdentifier": "live.poap.wallet",
+      "buildNumber": "2"
     },
     "android": {
       "adaptiveIcon": {
