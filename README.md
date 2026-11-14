@@ -227,6 +227,9 @@ NEAR work done in the window is meant to be judged.
     like Meteor, NEAR badges read from the contract, and registering before
     the pass is shown.
   - The contract deployed to mainnet as `poap-live.near` on 14 November 2026.
+- **Coming to NEAR soon.** Buying at the event (an allowance for each attendee,
+  spent at the event's vendors) runs on XRPL events today, because its
+  payments are in XRP. Bringing it to NEAR events is next.
 
 ### Built with
 
@@ -397,6 +400,9 @@ sequenceDiagram
 ```
 
 ## Buying at the event
+
+**XRPL events today, coming to NEAR soon.** The allowance and the vendor
+payments below are in XRP, so a NEAR event has no store yet.
 
 The allowance is the attendee's own XRP once it lands: they pay the vendor
 directly, and nothing is handed over until the ledger says the payment
