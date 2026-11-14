@@ -15,7 +15,7 @@ import { T } from "@/components/T";
 import { SafeArea } from "@/components/ui";
 import { api, type EventSummary } from "@/lib/api";
 import { ApiError } from "@/lib/http";
-import { loadRegistrations, type Registrations } from "@/lib/registrations";
+import { loadRegistrations, registerRoute, type Registrations } from "@/lib/registrations";
 import { server as currentServer } from "@/lib/server";
 import { useSettings } from "@/lib/settings";
 import { column, useTheme } from "@/lib/theme";
@@ -100,7 +100,7 @@ export default function Events() {
             signedUp={Boolean(registrations[String(item.eventId)])}
             onOpen={() => router.push(`/event/${item.eventId}`)}
             onPass={() => router.push(`/pass/${item.eventId}`)}
-            onRegister={() => router.push(`/register/${item.eventId}`)}
+            onRegister={() => router.push(registerRoute(item))}
           />
         )}
         ListEmptyComponent={

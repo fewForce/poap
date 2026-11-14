@@ -91,7 +91,8 @@ export function EventCard({
           </View>
           {badges > 0 ? <Bar percent={pct} /> : null}
 
-          {event.status === "open" && !signedUp ? (
+          {issuing && !signedUp ? (
+            // Registering comes first, on either chain: the pass opens after it.
             <Button label="Register" onPress={onRegister} style={{ marginTop: 14 }} />
           ) : issuing ? (
             <Button

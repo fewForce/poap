@@ -7,8 +7,12 @@
  * poap.live checks the signature against the wallet's address before it
  * writes anything. The key stays on the phone.
  *
- * Registering is optional. Without it the desk still issues the badge — it just
- * has no name to greet anyone by.
+ * The app registers before it shows a pass, for every event on either chain:
+ * the pass screen sends anyone not yet registered here first. So the organiser
+ * has the same details for every attendee who uses the app — a name, and an
+ * email if they gave one — and the desk checks them in when the badge is
+ * issued. (The desk itself still issues to any address it scans, a pass from
+ * the website say; that rule is poap.live's, not the app's.)
  *
  * The phone remembers which events each wallet registered for, and the name it
  * used, so screens can say so without asking. Forgetting is harmless:
@@ -58,6 +62,14 @@ export async function saveProfile(profile: Profile): Promise<void> {
   const email = profile.email?.trim() || null;
   if (!displayName && !email) await SecureStore.deleteItemAsync(PROFILE_KEY, STORE);
   else await SecureStore.setItemAsync(PROFILE_KEY, JSON.stringify({ displayName, email }), STORE);
+}
+
+/**
+ * Where "Register" goes for an event. While it is on, straight on to the pass
+ * once registered; before that, back to wherever they came from.
+ */
+export function registerRoute(event: { eventId: number; status: string }): string {
+  return event.status === "live" ? `/register/${event.eventId}?next=pass` : `/register/${event.eventId}`;
 }
 
 /** A plausible email, so a typo is caught here rather than as a 400. */

@@ -2,8 +2,10 @@
  * The pass: what the desk scans, and where the badge arrives.
  *
  * The code carries this phone's wallet address and nothing else, exactly like
- * the website's pass, so the desk cannot tell the two apart. Nobody needs to
- * have signed up: the desk issues to any address it scans.
+ * the website's pass, so the desk cannot tell the two apart. The app opens it
+ * only for an event this wallet has registered for here, and sends anyone else
+ * to register first, so the desk has a name and checks them in. (The desk
+ * itself issues to any address it scans.)
  *
  * WHILE IT IS ON SCREEN it watches the wallet on the ledger. Issuing tops an
  * empty wallet up first, so a wallet that changes is the sign to ask poap.live
@@ -176,7 +178,17 @@ export default function PassScreen() {
       };
 
       (async () => {
-        loadRegistrations(wallet.address).then((all) => alive && setRegisteredAs(all[String(eventId)]?.displayName ?? null));
+        // Registering comes first, on either chain (src/lib/registrations.ts):
+        // someone not yet registered here for this event registers, then the
+        // pass opens in place of the form.
+        const mine = (await loadRegistrations(wallet.address))[String(eventId)];
+        if (!alive) return;
+        if (!mine) {
+          stopped.current = true;
+          router.replace(`/register/${eventId}?next=pass`);
+          return;
+        }
+        setRegisteredAs(mine.displayName ?? null);
         // The chain decides what the code holds, so the event comes first. An
         // event that cannot be read (offline, an older server) is an XRPL one,
         // as every event was before NEAR.

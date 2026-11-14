@@ -13,7 +13,7 @@ import { api, isNearEvent, type EventSummary } from "@/lib/api";
 import { longDate, number, turnout } from "@/lib/format";
 import { absolute, ApiError } from "@/lib/http";
 import { heldTokens } from "@/lib/ledger";
-import { loadRegistrations } from "@/lib/registrations";
+import { loadRegistrations, registerRoute } from "@/lib/registrations";
 import { radius, useTheme } from "@/lib/theme";
 import { useWallet } from "@/lib/wallet";
 
@@ -171,10 +171,13 @@ export default function EventScreen() {
         </View>
       ) : issuing ? (
         <View style={{ gap: 10 }}>
-          <Button label="Register" onPress={() => router.push(`/register/${event.eventId}`)} />
-          <Button label="Show my pass" kind="secondary" onPress={() => router.push(`/pass/${event.eventId}`)} />
+          {/* While it is on, registering leads straight to the pass. */}
+          <Button
+            label={event.status === "live" ? "Register and show my pass" : "Register"}
+            onPress={() => router.push(registerRoute(event))}
+          />
           <T variant="small" tone="ink3" style={{ textAlign: "center" }}>
-            Registering puts your name on the list. Without it the desk still gives you the badge.
+            Registering puts your name on the list, and your pass is ready as soon as you do.
           </T>
         </View>
       ) : (

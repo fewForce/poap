@@ -8,6 +8,7 @@
  * Kept free of anything Expo so it runs the same under Node, which is how it is
  * checked against a real ledger.
  */
+import { base58 } from "@scure/base";
 import { sha512 } from "@xrplf/isomorphic/sha512";
 import { bytesToHex, hexToBytes, stringToHex } from "@xrplf/isomorphic/utils";
 import { encode, encodeForSigning } from "ripple-binary-codec";
@@ -39,6 +40,19 @@ export function nearAccountOf(publicKey: string): string {
   const key = publicKey.toLowerCase();
   if (!/^ed[0-9a-f]{64}$/.test(key)) throw new Error("only an ed25519 wallet has a NEAR account");
   return key.slice(2);
+}
+
+/**
+ * The same key the way NEAR wallets import it — Meteor's "private crypto key",
+ * MyNearWallet, near-cli: `ed25519:` and the base58 of the 32-byte secret
+ * followed by the 32-byte public key. Null for a key that is not ed25519.
+ *
+ * It is the whole key, exactly as the seed is: for the backup screen only.
+ */
+export function nearPrivateKeyOf(seed: string): string | null {
+  const { publicKey, privateKey } = deriveKeypair(seed.trim());
+  if (!/^ED[0-9A-F]{64}$/i.test(privateKey) || !/^ED[0-9A-F]{64}$/i.test(publicKey)) return null;
+  return `ed25519:${base58.encode(hexToBytes(privateKey.slice(2) + publicKey.slice(2)))}`;
 }
 
 // ---- registering -------------------------------------------------------------

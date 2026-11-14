@@ -2,6 +2,9 @@
  * Registering for one event: a name for the desk, an email if they like, one
  * button. The phone signs the registration with its wallet's key; nothing is
  * shown about that, because nothing about it needs a decision.
+ *
+ * `?next=pass` when the person was on their way to the pass: it opens as soon
+ * as they are registered, in place of this screen.
  */
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
@@ -17,8 +20,9 @@ import { useWallet } from "@/lib/wallet";
 export default function Register() {
   const wallet = useWallet();
   const toast = useToast();
-  const params = useLocalSearchParams<{ eventId: string }>();
+  const params = useLocalSearchParams<{ eventId: string; next?: string }>();
   const eventId = Number(params.eventId);
+  const toPass = params.next === "pass";
   const [event, setEvent] = useState<EventSummary | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -57,7 +61,8 @@ export default function Register() {
       // The event says its chain; ask again if it had not loaded, rather than register the wrong account.
       const ev = event ?? (await api.event(eventId));
       const { already } = await registerFor(wallet, eventId, { displayName: name, email: mail || null }, isNearEvent(ev) ? "near" : "xrpl");
-      router.back();
+      if (toPass) router.replace(`/pass/${eventId}`);
+      else router.back();
       toast.show(already ? "You were already registered" : event ? `Registered for ${event.name}` : "You are registered");
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "That did not go through. Try again.");
@@ -73,6 +78,7 @@ export default function Register() {
           <T variant="title">{event ? `Register for ${event.name}` : "Register"}</T>
           <T variant="body" tone="ink2">
             The desk sees your name when you arrive. Your email goes to the organiser only, and you can leave it out.
+            {toPass ? " Your pass opens as soon as you are registered." : ""}
           </T>
         </View>
         <Field
@@ -102,7 +108,7 @@ export default function Register() {
           maxLength={254}
         />
         {error ? <Notice tone="bad">{error}</Notice> : null}
-        <Button label="Register" onPress={submit} busy={busy} disabled={!valid} />
+        <Button label={toPass ? "Register and show my pass" : "Register"} onPress={submit} busy={busy} disabled={!valid} />
       </Screen>
     </KeyboardAvoidingView>
   );
