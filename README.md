@@ -17,9 +17,9 @@ and picks its chain when creating it, XRPL or NEAR. For a NEAR event:
    account. There is no wallet popup, no gas for the attendee and nothing to
    accept.
 
-The phone app in [`mobile/`](mobile) keeps its key on the phone. The same
-ed25519 key is the attendee's NEAR implicit account, so the app registers by
-signing and shows the badges it holds.
+Attendees carry the pass one of two ways, and the desk scans either: the
+**Apple Wallet pass** from the email, or the **POAP phone app** in
+[`mobile/`](mobile). See "Apple Wallet or the POAP app" below.
 
 **How NEAR fits.**
 
@@ -40,6 +40,51 @@ signing and shows the badges it holds.
   no offer to accept, unlike the XRPL flow.
 - **Upgradable.** `update_contract` and `migrate` let the contract take new
   code without losing the badges it holds.
+
+### Apple Wallet or the POAP app
+
+| | Apple Wallet pass | POAP app ([`mobile/`](mobile)) |
+|---|---|---|
+| **What the attendee installs** | Nothing: the pass arrives by email | The POAP app (Expo and React Native, iOS and Android) |
+| **Their NEAR account** | Typed when they register; the server checks that it exists | Made on the phone: the app's ed25519 key is a NEAR implicit account, so there is nothing to create or fund |
+| **Proof the account is theirs** | The pass's random token, tied to their registration | The registration is signed with the phone's key |
+| **The QR at the desk** | `POAP-PASS:` and a token, replaced after every scan | The app's NEAR account, shown only once they have registered |
+| **After the desk scans it** | The pass updates itself to say "Issued" | The badge appears on the app's Badges screen, read straight from the contract |
+
+**The POAP app:**
+
+- **Its key stays on the phone.** The key is kept in the keychain for this
+  device only, behind a passcode or Face ID, and poap.live never sees it. One
+  phone can hold several wallets.
+- **One key, two chains.** The same key is an XRPL wallet and a NEAR implicit
+  account; for a NEAR event the app uses the NEAR account.
+- **Registering comes first.** The attendee registers with a name and an email,
+  signed with the key, and the pass opens only after that.
+- **Badges come straight from NEAR.** The app reads them from `poap-live.near`
+  with `nft_tokens_for_owner`, not through poap.live.
+- **The same account works in other NEAR wallets.** The backup screen shows the
+  NEAR account id and its private key (`ed25519:…`), so the account, badges
+  included, opens in a NEAR wallet such as Meteor.
+- **It uses only poap.live's public routes.** Nothing on the server holds an
+  app user's key.
+
+**Try the app:**
+
+```
+cd mobile
+npm install
+cp .env.example .env    # EXPO_PUBLIC_API_URL=https://poap.live
+npx expo start
+```
+
+1. Open it in Expo Go (SDK 57), or in a development build made with
+   `npx expo run:ios` or `npx expo run:android`.
+2. Make a wallet, and set a passcode.
+3. Open "Poap - Near Hackathon 2026" from Events and register with your name
+   and email. The pass opens with your NEAR account's QR code.
+4. After the desk scans it, the badge shows on the Badges screen.
+5. On the Wallet screen, tap "Back up this wallet": "For a NEAR wallet" shows
+   the account id and key to import into Meteor.
 
 ### The flows on NEAR
 
