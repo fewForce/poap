@@ -1,6 +1,5 @@
 /**
- * Registering for an event: the person's name (and, if they like, email) on
- * the event's list, so the desk knows who they are when they walk in.
+ * Registering for an event: the person's name and email on the event's list, so the desk knows who they are when they walk in.
  *
  * The wallet proves itself the way Xaman would, without Xaman: poap.live hands
  * out a challenge, the phone signs it together with the name and email, and
@@ -9,8 +8,8 @@
  *
  * The app registers before it shows a pass, for every event on either chain:
  * the pass screen sends anyone not yet registered here first. So the organiser
- * has the same details for every attendee who uses the app — a name, and an
- * email if they gave one — and the desk checks them in when the badge is
+ * has the same details for every attendee who uses the app — a name and an
+ * email — and the desk checks them in when the badge is
  * issued. (The desk itself still issues to any address it scans, a pass from
  * the website say; that rule is poap.live's, not the app's.)
  *
@@ -90,6 +89,8 @@ export async function registerFor(
 ): Promise<{ registration: Registration; already: boolean }> {
   const displayName = profile.displayName.trim();
   const email = profile.email?.trim() || null;
+  // poap.live refuses a registration without one; say so before signing anything.
+  if (!email) throw new Error("An email is required to register.");
   const address = chain === "near" ? signer.nearAccount : signer.address;
   if (!address) throw new Error("This wallet's key cannot be a NEAR account. Make a new wallet in the app for NEAR events.");
 
@@ -101,7 +102,7 @@ export async function registerFor(
     signature,
     challenge,
     displayName,
-    ...(email ? { email } : {}),
+    email,
   });
 
   const all = await loadRegistrations(signer.address);

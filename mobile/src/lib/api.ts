@@ -124,7 +124,7 @@ export const api = {
   /** Register with a signature. Already registered is an answer, not an error. */
   async registerWallet(
     eventId: number,
-    body: { address: string; publicKey: string; signature: string; challenge: string; displayName: string; email?: string },
+    body: { address: string; publicKey: string; signature: string; challenge: string; displayName: string; email: string },
   ): Promise<{ registration: Registration; already: boolean }> {
     try {
       const r = await request<{ registration: Registration }>("POST", `/api/events/${eventId}/registrations/wallet`, { body });

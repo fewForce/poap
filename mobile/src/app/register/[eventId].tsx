@@ -1,6 +1,6 @@
 /**
- * Registering for one event: a name for the desk, an email if they like, one
- * button. The phone signs the registration with its wallet's key; nothing is
+ * Registering for one event: a name for the desk, an email for the organiser,
+ * one button. The phone signs the registration with its wallet's key; nothing is
  * shown about that, because nothing about it needs a decision.
  *
  * `?next=pass` when the person was on their way to the pass: it opens as soon
@@ -46,13 +46,14 @@ export default function Register() {
     };
   }, [eventId]);
 
-  const valid = name.trim().length > 0;
+  // Both are required: poap.live refuses a registration without an email.
+  const valid = name.trim().length > 0 && email.trim().length > 0;
 
   async function submit() {
     if (!valid || busy) return;
     const mail = email.trim();
-    if (mail && !looksLikeEmail(mail)) {
-      setError("That email does not look right. Check it, or leave it empty.");
+    if (!looksLikeEmail(mail)) {
+      setError("That email does not look right. Check it and try again.");
       return;
     }
     setBusy(true);
@@ -60,7 +61,7 @@ export default function Register() {
     try {
       // The event says its chain; ask again if it had not loaded, rather than register the wrong account.
       const ev = event ?? (await api.event(eventId));
-      const { already } = await registerFor(wallet, eventId, { displayName: name, email: mail || null }, isNearEvent(ev) ? "near" : "xrpl");
+      const { already } = await registerFor(wallet, eventId, { displayName: name, email: mail }, isNearEvent(ev) ? "near" : "xrpl");
       if (toPass) router.replace(`/pass/${eventId}`);
       else router.back();
       toast.show(already ? "You were already registered" : event ? `Registered for ${event.name}` : "You are registered");
@@ -77,7 +78,7 @@ export default function Register() {
         <View style={{ gap: 8 }}>
           <T variant="title">{event ? `Register for ${event.name}` : "Register"}</T>
           <T variant="body" tone="ink2">
-            The desk sees your name when you arrive. Your email goes to the organiser only, and you can leave it out.
+            The desk sees your name when you arrive. Your email goes to the organiser only.
             {toPass ? " Your pass opens as soon as you are registered." : ""}
           </T>
         </View>
@@ -94,7 +95,7 @@ export default function Register() {
           autoFocus={!name}
         />
         <Field
-          label="Email (optional)"
+          label="Email"
           value={email}
           onChangeText={setEmail}
           placeholder="you@example.com"
