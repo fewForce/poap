@@ -41,6 +41,14 @@ Attendees carry the pass one of two ways, and the desk scans either: the
 - **Upgradable.** `update_contract` and `migrate` let the contract take new
   code without losing the badges it holds.
 
+### One-page summary
+
+[![POAP on NEAR, a one-page summary: the problem, what we built, how NEAR fits, the flow, Apple Wallet pass or POAP app, what was built in the hackathon window, earlier use at real events, and what comes next](docs/near-hackathon/poap-on-near.png)](docs/near-hackathon/POAP_on_NEAR.pdf)
+
+[PDF](docs/near-hackathon/POAP_on_NEAR.pdf) ·
+[HTML source](docs/near-hackathon/POAP_on_NEAR.html) (download and open in a
+browser)
+
 ### Apple Wallet or the POAP app
 
 | | Apple Wallet pass | POAP app ([`mobile/`](mobile)) |
