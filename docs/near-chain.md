@@ -4,6 +4,115 @@ An event is created on one chain, XRPL or NEAR, and stays on it. Everything that
 already exists for XRPL keeps working unchanged: the default is XRPL, and every
 NEAR path is a branch taken only for events whose `chain` is `near`.
 
+## The flow
+
+Four phases. Compared with XRPL (README, "The flow"), the offer, the accept and
+the confirm are gone: the desk mints straight into the attendee's account, and
+that mint is the attendance record.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Org as Organiser console
+    actor Att as Attendee
+    actor Desk as Volunteer desk
+    participant API
+    participant DB as Postgres index
+    participant NEAR as Badge contract
+
+    Note over Org,NEAR: 1 — Create. The chain is chosen once and never changes.
+
+    Org->>API: POST /admin/api/events {chain: "near", name, ...}, no eventId
+    Note right of API: Refused when the server has no NEAR settings.<br/>No XRP allowance, budget or treasury on NEAR.
+    API->>API: draw a nine-digit event id
+    API->>DB: an event with this id? none
+    API->>NEAR: event_title(event_id)
+    NEAR-->>API: null: never minted under
+    Note right of NEAR: The id is never typed. A used one is<br/>drawn again, so no two events share an<br/>attendee list on the contract.
+    API->>DB: events row, chain = near, that id
+
+    Note over Org,NEAR: 2 — Register. The attendee proves an account, or types one.
+
+    alt Wallet app
+        Note right of Att: The wallet's ed25519 key is already a NEAR<br/>implicit account: hex(public key).<br/>Nothing to create, nothing to fund.
+        Att->>API: POST /api/events/{eventId}/registrations/challenge {address}
+        API-->>Att: challenge
+        Att->>API: POST /api/events/{eventId}/registrations/wallet<br/>{address, publicKey, signature, challenge, displayName, email}
+        Note right of API: The signature verifies and address = hex(publicKey).<br/>No network call. Proof: near_signature.
+    else Website
+        Att->>API: POST /api/events/{eventId}/registrations/near<br/>{accountId, displayName, email}
+        Note right of API: Typed, not proven (self_declared).<br/>NEAR wallet sign-in (NEP-413) is the follow-up.
+    end
+    API->>DB: registration row
+
+    Note over Org,NEAR: 3 — Issue. The desk mints straight to the attendee.
+
+    Att->>Desk: shows the pass, a QR of the NEAR account
+    Desk->>API: GET /admin/api/desk/attendees/{account}?eventId
+    API-->>Desk: registered? badge already issued?
+    Desk->>API: POST /events/{eventId}/claims {address}
+    opt a named account, like alice.testnet
+        API->>NEAR: does the account exist?
+        Note right of NEAR: A typo would mint, forever, to nobody.<br/>An implicit account is a key: it holds<br/>the badge before it exists on chain.
+    end
+    API->>DB: attendance for (event, account)? none
+    API->>DB: open the claim slot
+    Note right of DB: UNIQUE(event_id, address): a second desk<br/>scanning the same person gets 409.
+    API->>API: sign nft_mint with the minter key
+    Note right of API: A function-call key: it may call nft_mint<br/>and nothing else. Never logged or returned.
+    API->>DB: save the signed bytes and hash on the slot
+    Note right of DB: Saved BEFORE sending. A request that dies after<br/>sending is finished by resending the same bytes,<br/>which NEAR runs once. Mints go one at a time.
+    API->>NEAR: nft_mint(event_id, receiver_id, event_title), wait for FINAL
+    Note right of NEAR: Mints token "{event_id}:{account}" to the account<br/>and writes the attendance record (block height,<br/>minted at). A second mint for the same pair<br/>mints nothing and answers already: true.
+    alt it ran
+        NEAR-->>API: {already, attendance}
+    else expired before it ran
+        API->>NEAR: sign again and send
+        NEAR-->>API: {already, attendance}
+    else the contract refused (paused, out of storage)
+        NEAR-->>API: failure
+        API->>DB: free the slot
+        API-->>Desk: the reason. Nothing recorded, try again later
+    end
+    API->>DB: attendance row: token id, tx hash, block height, no offer
+    API->>DB: mark the slot claimed
+    API->>DB: check their registration in, if they registered
+    API-->>Desk: 201 {chain: "near", tokenId, txHash, blockHeight}
+    Note over Att,NEAR: The attendee signed nothing and paid nothing.
+
+    Note over Org,NEAR: 4 — See it. Nothing for the attendee to accept.
+
+    alt Wallet app
+        Att->>NEAR: nft_tokens_for_owner(account), straight to a NEAR node
+        NEAR-->>Att: the badge, with its title and art
+    else Website pass
+        Att->>API: GET /events/{eventId}/attendance/{account}, polled
+        API-->>Att: the record, and the pass turns into the receipt
+    end
+```
+
+### Why a burned NEAR badge still verifies
+
+The contract keeps the attendance record apart from the token. A burn removes
+the token; verification reads the record.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Holder
+    actor V as Verifier
+    participant API
+    participant NEAR as Badge contract
+
+    Holder->>NEAR: nft_burn(token_id) with 1 yoctoNEAR, signed by the holder
+    Note right of NEAR: Only the holder can burn, and nobody can transfer.<br/>The token goes. The record stays, with burned_at set.
+    V->>API: GET /verify?address={account}&eventId={eventId}
+    API->>NEAR: attendance(event_id, account_id)
+    NEAR-->>API: token id, block height, minted_at, burned_at
+    API-->>V: attended: true, status: attended_badge_burned
+    Note over API,NEAR: nft_tokens_for_owner would return nothing now.<br/>It is never consulted. Attendance is an event, not a state.
+```
+
 ## Decisions
 
 ### 1. One shared badge contract
@@ -87,6 +196,10 @@ So for a NEAR event:
 - `attendance` rows hold the token id in `nftoken_id`, the mint transaction hash
   in `tx_hash` and the contract's block height in `ledger_index`. `offer_id` is
   null.
+- The attendee's registration, if they have one, is checked in
+  (`checked_in_at`) as soon as the mint is recorded, as XRPL does when the
+  attendee's accept is confirmed. Registrations themselves hold the same
+  fields on both chains: name, email, the address and how it was proved.
 
 **How a mint is sent, so that a retry never mints twice or loses one.**
 
@@ -146,8 +259,18 @@ attendee is never asked to make or fund anything.
 - Creating a NEAR event is refused when the server has no NEAR configuration.
 - XRP allowances and budgets are refused for NEAR events: they pay XRP to XRPL
   wallets, which a NEAR attendee does not have. No treasury is generated.
-- `event_id` keeps its meaning and range. On NEAR it is the contract's
-  `event_id` (u32), so the number in the console is the number on chain on both.
+- On NEAR the event id is the contract's `event_id` (u32), so the number in the
+  console is the number on chain, as on XRPL.
+- A NEAR event's id is picked by the server, never typed
+  (`src/near/event-id.ts`). Every server pointed at the contract shares its one
+  `event_id` space, and two events with one id would share one attendee list.
+  So the id is drawn at random from nine digits (100000000 to 999999999) and
+  kept only when no event on this server has it and the contract has never
+  minted under it (`event_title` is null). The range stays clear of the ids
+  `npm run e2e:near` mints under (1.9 billion up). A create body for a NEAR
+  event that names an `eventId` is refused with a 400, and a create is refused
+  with a 502 when the contract cannot be read to check the id. An XRPL event
+  still takes the id the organiser types.
 
 ### 5. Server shape
 

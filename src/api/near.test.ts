@@ -20,6 +20,7 @@ import {
   MemoryEventRepository,
   MemoryRegistrationRepository,
 } from "../db/memory.js";
+import { NEAR_EVENT_ID_ATTEMPTS, NEAR_EVENT_ID_MAX, NEAR_EVENT_ID_MIN, pickNearEventId } from "../near/event-id.js";
 import { registrationMessage } from "../xrpl/wallet-proof.js";
 import type { ApiDeps, ChainOps } from "./deps.js";
 import { registerErrorHandler } from "./http-errors.js";
@@ -113,18 +114,61 @@ beforeEach(async () => {
 });
 
 describe("creating an event on a chain", () => {
-  it("creates a NEAR event and publishes its chain", async () => {
+  it("creates a NEAR event under an id the server picks, and publishes its chain", async () => {
     const app = adminServer();
     const res = await app.inject({
       method: "POST",
       url: "/admin/api/events",
-      payload: { eventId: 77, name: "NEAR Night", chain: "near", status: "open" },
+      payload: { name: "NEAR Night", chain: "near", status: "open" },
     });
     expect(res.statusCode).toBe(201);
-    expect(res.json().event.chain).toBe("near");
+    const { eventId, chain } = res.json().event;
+    expect(chain).toBe("near");
+    expect(eventId).toBeGreaterThanOrEqual(NEAR_EVENT_ID_MIN);
+    expect(eventId).toBeLessThanOrEqual(NEAR_EVENT_ID_MAX);
 
-    const pub = await app.inject({ method: "GET", url: "/api/events/77" });
+    const pub = await app.inject({ method: "GET", url: `/api/events/${eventId}` });
     expect(pub.json().chain ?? pub.json().event?.chain).toBe("near");
+  });
+
+  it("gives every NEAR event its own id", async () => {
+    const app = adminServer();
+    const ids = new Set<number>();
+    for (let i = 0; i < 20; i++) {
+      const res = await app.inject({ method: "POST", url: "/admin/api/events", payload: { name: `Night ${i}`, chain: "near" } });
+      expect(res.statusCode).toBe(201);
+      ids.add(res.json().event.eventId);
+    }
+    expect(ids.size).toBe(20);
+  });
+
+  it("refuses a typed id on a NEAR event", async () => {
+    const before = (await events.list({ limit: 100, offset: 0 })).length;
+    const res = await adminServer().inject({
+      method: "POST",
+      url: "/admin/api/events",
+      payload: { eventId: 77, name: "Mine", chain: "near" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.message).toMatch(/chosen by the server/);
+    expect(res.json().error.details.issues[0].path).toBe("eventId");
+    expect(await events.find(77)).toBeNull();
+    expect((await events.list({ limit: 100, offset: 0 })).length).toBe(before);
+  });
+
+  it("creates nothing when the contract cannot be read to check a new id", async () => {
+    const before = (await events.list({ limit: 100, offset: 0 })).length;
+    near.failNextView();
+    const res = await adminServer().inject({ method: "POST", url: "/admin/api/events", payload: { name: "Offline", chain: "near" } });
+    expect(res.statusCode).toBe(502);
+    expect((await events.list({ limit: 100, offset: 0 })).length).toBe(before);
+  });
+
+  it("still needs a typed id for an XRPL event, with the same 400 as before", async () => {
+    const res = await adminServer().inject({ method: "POST", url: "/admin/api/events", payload: { name: "No Id" } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe("BAD_REQUEST");
+    expect(res.json().error.details.issues.map((i: { path: string }) => i.path)).toEqual(["eventId"]);
   });
 
   it("defaults to XRPL", async () => {
@@ -133,20 +177,21 @@ describe("creating an event on a chain", () => {
   });
 
   it("refuses a NEAR event on a server without NEAR", async () => {
+    const before = (await events.list({ limit: 100, offset: 0 })).length;
     const res = await adminServer({ withNear: false }).inject({
       method: "POST",
       url: "/admin/api/events",
-      payload: { eventId: 79, name: "Nope", chain: "near" },
+      payload: { name: "Nope", chain: "near" },
     });
     expect(res.statusCode).toBe(503);
-    expect(await events.find(79)).toBeNull();
+    expect((await events.list({ limit: 100, offset: 0 })).length).toBe(before);
   });
 
   it("refuses an XRP allowance on a NEAR event", async () => {
     const res = await adminServer().inject({
       method: "POST",
       url: "/admin/api/events",
-      payload: { eventId: 80, name: "Paid", chain: "near", allowanceXrp: "2" },
+      payload: { name: "Paid", chain: "near", allowanceXrp: "2" },
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error.message).toMatch(/XRP/);
@@ -183,6 +228,28 @@ describe("issuing on NEAR", () => {
     });
     expect(res.json().accept).toBeUndefined();
     expect(await attendance.findByEventAndAddress(NEAR_EVENT, "alice.testnet")).not.toBeNull();
+  });
+
+  it("checks a registered attendee in when their badge is minted, as XRPL does on confirm", async () => {
+    const reg = await registrations.create({
+      eventId: NEAR_EVENT,
+      address: "alice.testnet",
+      addressProof: "self_declared",
+      displayName: "Alice",
+      email: "alice@example.com",
+    });
+    expect(reg.checkedInAt).toBeNull();
+    const res = await server().inject({ method: "POST", url: `/events/${NEAR_EVENT}/claims`, payload: { address: "alice.testnet" } });
+    expect(res.statusCode).toBe(201);
+    const after = await registrations.findByAddress(NEAR_EVENT, "alice.testnet");
+    expect(after?.checkedInAt).not.toBeNull();
+    expect(after).toMatchObject({ displayName: "Alice", email: "alice@example.com" });
+  });
+
+  it("issues to a walk-up with no registration, as XRPL does", async () => {
+    const res = await server().inject({ method: "POST", url: `/events/${NEAR_EVENT}/claims`, payload: { address: "alice.testnet" } });
+    expect(res.statusCode).toBe(201);
+    expect(await registrations.findByAddress(NEAR_EVENT, "alice.testnet")).toBeNull();
   });
 
   it("answers a second issue with 409 and the record, like XRPL", async () => {
@@ -563,5 +630,29 @@ describe("registering for a NEAR event", () => {
       payload: { address: "alice.testnet" },
     });
     expect(res.statusCode).toBe(201);
+  });
+});
+
+describe("picking a NEAR event id", () => {
+  it("skips ids this server's events or the contract already use", async () => {
+    await events.create({ eventId: 123_456_789, name: "Taken here", status: "draft", chain: "near" });
+    near.mintedElsewhere(234_567_890, "bob.testnet");
+    const draws = [123_456_789, 234_567_890, 345_678_901];
+    const id = await pickNearEventId({ near, events }, () => draws.shift() as number);
+    expect(id).toBe(345_678_901);
+  });
+
+  it("counts an event the contract has seen even after its badges were burned", async () => {
+    near.mintedElsewhere(456_789_012, "bob.testnet");
+    near.burn(456_789_012, "bob.testnet");
+    const draws = [456_789_012, 567_890_123];
+    expect(await pickNearEventId({ near, events }, () => draws.shift() as number)).toBe(567_890_123);
+  });
+
+  it("gives up, rather than loop, when every draw is taken", async () => {
+    near.mintedElsewhere(678_901_234, "bob.testnet");
+    const draw = vi.fn(() => 678_901_234);
+    await expect(pickNearEventId({ near, events }, draw)).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(draw).toHaveBeenCalledTimes(NEAR_EVENT_ID_ATTEMPTS);
   });
 });

@@ -694,6 +694,10 @@ export function registerClaimRoutes(app: FastifyInstance, deps: ApiDeps): void {
           { eventId, address, tokenId: issued.onChain.tokenId, txHash: issued.record.txHash },
           "NEAR badge minted",
         );
+        // The arrival, as XRPL records it once its badge is recorded: the
+        // registration is checked in. A NEAR mint IS that moment — there is no
+        // later accept to wait for.
+        await markArrival(deps, eventId, address, request.log);
         return reply.code(201).send({
           chain: "near",
           eventId,

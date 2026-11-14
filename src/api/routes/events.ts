@@ -16,7 +16,9 @@
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandler } from "fastify";
 import { z } from "zod";
+import { XrplLayerError } from "../../errors.js";
 import { isXrpAmount } from "../../money.js";
+import { pickNearEventId } from "../../near/event-id.js";
 import { CHAINS, MAX_TAXON, type Chain, type EventRecord, type EventStatus } from "../../types.js";
 import { allowanceOverCeiling } from "../allowance.js";
 import { requireAdmin } from "../auth.js";
@@ -210,7 +212,37 @@ const UPDATABLE_FIELDS = [
   "budgetXrp",
 ] as const;
 
-type CreateEventBody = z.infer<typeof createEventBodySchema>;
+/**
+ * A NEAR event's create body: the same fields, but the server picks the id
+ * (src/near/event-id.ts). `eventId` is declared only so the handler can refuse
+ * it by name, as PATCH does.
+ */
+const nearCreateEventBodySchema = createEventBodySchema
+  .omit({ eventId: true })
+  .extend({
+    eventId: z.unknown().optional(),
+    chain: z.literal("near"),
+  })
+  .strict();
+
+type XrplCreateEventBody = Omit<z.infer<typeof createEventBodySchema>, "chain"> & { chain: "xrpl" };
+type NearCreateEventBody = z.infer<typeof nearCreateEventBodySchema>;
+type CreateEventBody = XrplCreateEventBody | NearCreateEventBody;
+
+/**
+ * The edge check: the create body exactly as before NEAR, for every create
+ * except a NEAR one. An XRPL caller gets every issue it always got.
+ */
+const createEventBodyAnyChainSchema = z.unknown().transform((data, ctx): CreateEventBody => {
+  const near = (data as { chain?: unknown } | null)?.chain === "near";
+  const result = (near ? nearCreateEventBodySchema : createEventBodySchema).safeParse(data);
+  if (!result.success) {
+    for (const issue of result.error.issues) ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+    return z.NEVER;
+  }
+  // Only a body whose chain is "near" reaches the NEAR schema, so this one is XRPL.
+  return result.data as CreateEventBody;
+});
 type UpdateEventBody = z.infer<typeof updateEventBodySchema>;
 type PagingQuery = z.infer<typeof pagingQuerySchema>;
 type AdminListQuery = z.infer<typeof adminListQuerySchema>;
@@ -263,6 +295,27 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
   if (!events) return;
 
   const requireAdmin = adminGuard(deps);
+
+  /**
+   * A new NEAR event under an id nothing uses yet. The id is checked before the
+   * insert, so a clash at the insert means another create drew the same id in
+   * between: draw again.
+   */
+  async function createWithNewNearId(fields: Omit<EventRecord, "eventId" | "createdAt" | "updatedAt">) {
+    const near = deps.near;
+    if (!near || !events) {
+      throw new XrplLayerError("SERVICE_UNAVAILABLE", "NEAR is not set up on this server.", { chain: "near" });
+    }
+    for (let attempt = 1; ; attempt++) {
+      const eventId = await pickNearEventId({ near, events });
+      try {
+        return await events.create({ ...fields, eventId });
+      } catch (err) {
+        if (attempt < 3 && err instanceof XrplLayerError && err.code === "DUPLICATE_CLAIM") continue;
+        throw err;
+      }
+    }
+  }
 
   /**
    * GET /api/events?limit=&offset= — the public registration landing.
@@ -605,11 +658,16 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
   /**
    * POST /admin/api/events — create.
    *
+   * An XRPL event takes the `eventId` the organiser chose: it is the taxon. A
+   * NEAR event is given one by the server, unused here and on the contract,
+   * and a body that names one is refused.
+   *
    * 201 | 400 bad input | 401 | 409 that taxon is already an event
+   * | 502 the NEAR contract could not be read to check a new id
    */
   app.post<{ Body: CreateEventBody }>(
     "/admin/api/events",
-    { schema: { body: createEventBodySchema }, preHandler: requireAdmin },
+    { schema: { body: createEventBodyAnyChainSchema }, preHandler: requireAdmin },
     async (request, reply) => {
       const body = request.body;
 
@@ -626,28 +684,38 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
         );
       }
 
-      const clash = await events.find(body.eventId);
-      if (clash) {
-        return sendError(
-          reply,
-          409,
-          "DUPLICATE_CLAIM",
-          `Event ${body.eventId} already exists (${clash.name}). The event id is the NFTokenTaxon, ` +
-            "so reusing it would mix two events' badges into one collection.",
-          { eventId: body.eventId },
-        );
+      if (body.chain === "near" && body.eventId !== undefined) {
+        const message =
+          "A NEAR event's id is chosen by the server, so that no two events share one on the " +
+          "badge contract. Leave eventId out.";
+        return sendError(reply, 400, "INVALID_INPUT", message, { issues: [{ path: "eventId", message }] });
       }
 
-      // Badges under a taxon with no event row: a previous deployment, or an
-      // in-memory index that did not survive a restart. Re-creating the event is
-      // the fix in the second case and a mistake in the first, and only an
-      // operator can tell which — so it is a loud line, not a refusal.
-      if (await events.hasBadges(body.eventId)) {
-        request.log.warn(
-          { eventId: body.eventId },
-          "creating an event whose taxon already has badges on the ledger; those badges will be " +
-            "counted as this event's",
-        );
+      // A typed id is XRPL's alone: a NEAR id is picked below, already unused.
+      if (body.chain === "xrpl") {
+        const clash = await events.find(body.eventId);
+        if (clash) {
+          return sendError(
+            reply,
+            409,
+            "DUPLICATE_CLAIM",
+            `Event ${body.eventId} already exists (${clash.name}). The event id is the NFTokenTaxon, ` +
+              "so reusing it would mix two events' badges into one collection.",
+            { eventId: body.eventId },
+          );
+        }
+
+        // Badges under a taxon with no event row: a previous deployment, or an
+        // in-memory index that did not survive a restart. Re-creating the event is
+        // the fix in the second case and a mistake in the first, and only an
+        // operator can tell which — so it is a loud line, not a refusal.
+        if (await events.hasBadges(body.eventId)) {
+          request.log.warn(
+            { eventId: body.eventId },
+            "creating an event whose taxon already has badges on the ledger; those badges will be " +
+              "counted as this event's",
+          );
+        }
       }
 
       if (body.allowanceXrp !== undefined) {
@@ -659,8 +727,7 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
         }
       }
 
-      const created = await events.create({
-        eventId: body.eventId,
+      const fields = {
         name: body.name,
         status: body.status,
         chain: body.chain,
@@ -670,7 +737,11 @@ export function registerEventRoutes(app: FastifyInstance, deps: ApiDeps): void {
         ...(body.metadataUri === undefined ? {} : { metadataUri: body.metadataUri }),
         ...(body.allowanceXrp === undefined ? {} : { allowanceXrp: body.allowanceXrp }),
         ...(body.budgetXrp === undefined ? {} : { budgetXrp: body.budgetXrp }),
-      });
+      };
+      const created =
+        body.chain === "xrpl"
+          ? await events.create({ eventId: body.eventId, ...fields })
+          : await createWithNewNearId(fields);
 
       // The event's own wallet, made now so the organiser can fund it straight
       // away. Never fails the create: an event with no treasury yet still takes

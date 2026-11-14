@@ -1141,16 +1141,15 @@ a{color:var(--jade)}
               </p>
             </div>
             <div id="taxon-near" hidden>
-              <p style="margin-top:10px">
+              <p style="margin-top:10px" id="near-id-auto">
+                <b>Picked for you</b> when you create the event: a nine-digit number that no event on this
+                server has and the NEAR badge contract has never minted under. Two events sharing a number
+                would share one attendee list on the contract, so it is never typed.
+              </p>
+              <p>
                 This integer <b>is</b> the event&rsquo;s number on the <b>NEAR badge contract</b>. Every
                 badge for this event carries it in its token id (<code class="mono">event:account</code>)
                 and in the contract&rsquo;s attendance record, so it <b>cannot be changed afterwards</b>.
-              </p>
-              <p>
-                <b>Do not reuse a number.</b> The contract keeps one record per event and account: two
-                events sharing a number share one attendee list, and an attendee of the first could never
-                get a badge for the second. The server refuses a duplicate with a 409 for exactly this
-                reason.
               </p>
             </div>
             <p id="taxon-range">Any whole number from 0 to 2147483647. Pick one you can read out loud &mdash;
@@ -2309,6 +2308,16 @@ a{color:var(--jade)}
     setText("taxon-meaning", v === "near" ? "= event id on the NEAR contract" : "= NFTokenTaxon");
     $("taxon-xrpl").hidden = v === "near";
     $("taxon-near").hidden = v !== "near";
+    // A NEAR event's id is the server's to pick: nothing to type on create.
+    var creating = formMode === "create";
+    show($("in-eventId"), creating && v !== "near");
+    show($("taxon-range"), creating && v !== "near");
+    show($("near-id-auto"), creating);
+    if (creating) {
+      setText("form-sub", v === "near"
+        ? "An event is a row in the database and a number on the NEAR badge contract, which the server picks. Everything here can be edited later."
+        : "An event is a row in the database and a number on the ledger. Pick the number carefully: everything else here can be edited later.");
+    }
     // XRP paid to XRPL wallets: nothing a NEAR attendee has.
     show($("xrp-money"), v !== "near");
   }
@@ -2443,27 +2452,30 @@ a{color:var(--jade)}
     var path;
 
     if (formMode === "create") {
-      var idRaw = trimmed("in-eventId");
-      if (!/^\d+$/.test(idRaw)) {
-        fieldError("eventId", $("in-chain").value === "near"
-          ? "A whole number, digits only. This becomes the event's number on the NEAR contract."
-          : "A whole number, digits only. This becomes the NFTokenTaxon.");
-        $("in-eventId").focus();
-        return;
-      }
-      var idNum = Number(idRaw);
-      if (!isFinite(idNum) || idNum > 2147483647) {
-        fieldError("eventId", "Must be 2147483647 or lower — above that the taxon range is reserved.");
-        $("in-eventId").focus();
-        return;
+      var chain = $("in-chain").value === "near" ? "near" : "xrpl";
+      // XRPL: the organiser's number, the taxon. NEAR: the server picks one.
+      var idNum = null;
+      if (chain === "xrpl") {
+        var idRaw = trimmed("in-eventId");
+        if (!/^\d+$/.test(idRaw)) {
+          fieldError("eventId", "A whole number, digits only. This becomes the NFTokenTaxon.");
+          $("in-eventId").focus();
+          return;
+        }
+        idNum = Number(idRaw);
+        if (!isFinite(idNum) || idNum > 2147483647) {
+          fieldError("eventId", "Must be 2147483647 or lower — above that the taxon range is reserved.");
+          $("in-eventId").focus();
+          return;
+        }
       }
       if (!name) { fieldError("name", "A name is required."); $("in-name").focus(); return; }
 
-      var chain = $("in-chain").value === "near" ? "near" : "xrpl";
       if (chain === "near") { allowanceXrp = ""; budgetXrp = ""; }
       if (!amountsOk(allowanceXrp, budgetXrp)) return;
 
-      body = { eventId: idNum, name: name, status: status, chain: chain };
+      body = { name: name, status: status, chain: chain };
+      if (idNum !== null) body.eventId = idNum;
       if (description) body.description = description;
       if (eventDate) body.eventDate = eventDate;
       if (venue) body.venue = venue;

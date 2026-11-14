@@ -10,6 +10,7 @@
  * `expireNextSend()`, `throwOnNextSend()`, `failNextSign()`. Nothing here
  * touches the network.
  */
+import { ConnectionError } from "../../src/errors.js";
 import type { NearGateway, NearNetwork, NearSignedTx, NearTxOutcome } from "../../src/types.js";
 
 interface Record_ {
@@ -43,6 +44,7 @@ export class MockNearGateway implements NearGateway {
   #nonce = 0;
   #steps: SendStep[] = [];
   #signFailures: string[] = [];
+  #viewFailures: string[] = [];
   #ran = new Map<string, NearTxOutcome>();
 
   constructor(opts: { network?: NearNetwork; contractId?: string } = {}) {
@@ -72,9 +74,15 @@ export class MockNearGateway implements NearGateway {
     this.#steps.push({ kind: "lose" });
   }
 
-  /** A record minted outside the server: by a script, or another server. */
-  mintedElsewhere(eventId: number, accountId: string): void {
+  /** A record minted outside the server: by a script, or another server. Names the event, as a first mint does. */
+  mintedElsewhere(eventId: number, accountId: string, eventTitle = `Event ${eventId}`): void {
     this.records.set(`${eventId}:${accountId}`, { blockHeight: ++this.height, mintedAtMs: Date.now(), burnedAtMs: null });
+    if (!this.titles.has(eventId)) this.titles.set(eventId, eventTitle);
+  }
+
+  /** The next view call fails as the gateway's does when the node does not answer. */
+  failNextView(error = "fetch failed"): void {
+    this.#viewFailures.push(error);
   }
 
   burn(eventId: number, accountId: string): void {
@@ -83,6 +91,11 @@ export class MockNearGateway implements NearGateway {
   }
 
   async view<T>(method: string, args: Record<string, unknown>): Promise<T> {
+    const failure = this.#viewFailures.shift();
+    if (failure) throw new ConnectionError(`NEAR view ${method} on ${this.contractId} failed: ${failure}`, { method });
+    if (method === "event_title") {
+      return (this.titles.get(Number(args.event_id)) ?? null) as T;
+    }
     if (method === "attendance") {
       const key = `${args.event_id}:${args.account_id}`;
       const r = this.records.get(key);
