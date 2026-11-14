@@ -1241,7 +1241,7 @@ describe("POST /api/events/:eventId/registrations", () => {
 
   it("refuses a registration with no name", async () => {
     // A door cannot be worked off a list of wallet addresses, so the name is
-    // required. The email is not — see the test below.
+    // required. So is the email — see the test below.
     const res = await h.app.inject({
       method: "POST",
       url: `/api/events/${OPEN_EVENT}/registrations`,
@@ -1252,20 +1252,23 @@ describe("POST /api/events/:eventId/registrations", () => {
     expect(h.registrations.rows).toHaveLength(0);
   });
 
-  it("registers with a name and no email", async () => {
-    // Mandatory for one release (migration 008), optional again as of 009:
-    // asking for an address costs registrations at a door, and nothing about
-    // the badge depends on reaching anyone afterwards.
-    const res = await h.app.inject({
-      method: "POST",
-      url: `/api/events/${OPEN_EVENT}/registrations`,
-      payload: { signinUuid: UUID_A, displayName: "Ada" },
-    });
-
-    expect(res.statusCode).toBe(201);
-    expect(h.registrations.rows).toHaveLength(1);
-    expect(h.registrations.rows[0]).toMatchObject({ displayName: "Ada" });
-    expect(h.registrations.rows[0]?.email ?? null).toBeNull();
+  it("refuses a registration with no email, or an empty one, and says why", async () => {
+    // Required on every registration route: the organiser reaches attendees
+    // through it and the Apple Wallet pass is sent to it. (Mandatory in 008,
+    // optional from 009, required again — in the API only, see the route.)
+    for (const payload of [
+      { signinUuid: UUID_A, displayName: "Ada" },
+      { signinUuid: UUID_A, displayName: "Ada", email: "" },
+    ]) {
+      const res = await h.app.inject({
+        method: "POST",
+        url: `/api/events/${OPEN_EVENT}/registrations`,
+        payload,
+      });
+      expect(res.statusCode, JSON.stringify(payload)).toBe(400);
+      expect(res.body).toContain("An email is required to register.");
+    }
+    expect(h.registrations.rows).toHaveLength(0);
   });
 
   it("still refuses a name that is only whitespace, and a malformed email", async () => {
@@ -1487,14 +1490,15 @@ describe("POST /api/events/:eventId/registrations/wallet", () => {
     signer: TestWallet = wallet,
   ): Record<string, unknown> {
     const displayName = fields.displayName ?? "Ada Lovelace";
-    const message = registrationMessage({ eventId, address: wallet.address, displayName, email: fields.email ?? null, challenge });
+    const email = fields.email ?? "ada@example.com";
+    const message = registrationMessage({ eventId, address: wallet.address, displayName, email, challenge });
     return {
       address: wallet.address,
       publicKey: signer.publicKey,
       signature: signer.sign(message),
       challenge,
       displayName,
-      ...(fields.email ? { email: fields.email } : {}),
+      email,
     };
   }
 
@@ -1515,6 +1519,16 @@ describe("POST /api/events/:eventId/registrations/wallet", () => {
       email: "ada@example.com",
     });
     expect(h.signIn.created).toHaveLength(0); // Xaman never involved
+  });
+
+  it("refuses a signed registration with no email", async () => {
+    const challenge = await challengeFor(OPEN_EVENT);
+    const { email: _dropped, ...body } = signedBody(OPEN_EVENT, challenge);
+    const res = await register(OPEN_EVENT, body);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("An email is required to register.");
+    expect(h.registrations.rows).toHaveLength(0);
   });
 
   it("works for a live event too, because walk-ups are the point", async () => {

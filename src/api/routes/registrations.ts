@@ -95,6 +95,25 @@ const returnUrlSchema = z.object({
   web: z.string().url().optional(),
 });
 
+/**
+ * Every route that registers someone requires an email: the organiser reaches
+ * attendees through it, and the Apple Wallet pass is sent to it.
+ *
+ * Required in the API, not the database. It was mandatory once before
+ * (migration 008) and optional from 009, so rows written in between may have
+ * none — a NOT NULL would fail on them, and a NOT VALID check would refuse
+ * every later update of such a row, check-in included.
+ *
+ * Not trimmed: the wallet-signature route signs the email as sent, and a
+ * server that quietly changed it would no longer verify the app's signature.
+ */
+const registrationEmailSchema = z
+  .email({
+    error: (issue) =>
+      issue.input === undefined || issue.input === "" ? "An email is required to register." : "Not a valid email address.",
+  })
+  .max(254);
+
 /** `.nullish()`: a POST with nothing to say is the normal case here. */
 const signInBodySchema = z.object({ returnUrl: returnUrlSchema.optional() }).nullish();
 
@@ -112,19 +131,15 @@ const registerBodySchema = z.object({
   /** The payload THIS server created. Its resolution is the only source of the address. */
   signinUuid: z.uuid(),
   /**
-   * A name is required; an email is not.
+   * A name and an email, both required.
    *
    * Neither is needed to MINT anything — the wallet is the whole of what a
    * badge depends on, and nothing in the claim or verify path reads either.
    * The name is required because the EVENT needs it: a door cannot be run off
-   * a list of wallet addresses.
-   *
-   * The email was mandatory for one release (migration 008) and is optional
-   * again as of 009. Asking for it costs registrations at a door, and the
-   * badge does not depend on reaching anyone afterwards.
+   * a list of wallet addresses. The email, see registrationEmailSchema.
    */
   displayName: z.string().trim().min(1).max(MAX_DISPLAY_NAME),
-  email: z.email().max(254).optional(),
+  email: registrationEmailSchema,
 });
 
 /**
@@ -142,7 +157,7 @@ const xrplWalletRegisterBodySchema = z.object({
   signature: z.string().regex(/^[0-9A-Fa-f]{64,200}$/),
   challenge: z.string().min(20).max(300),
   displayName: z.string().trim().min(1).max(MAX_DISPLAY_NAME),
-  email: z.email().max(254).optional(),
+  email: registrationEmailSchema,
 });
 
 /**
@@ -158,7 +173,7 @@ const walletRegisterBodySchema = xrplWalletRegisterBodySchema.extend({
 const nearRegisterBodySchema = z.object({
   accountId: anyChainAddressSchema,
   displayName: z.string().trim().min(1).max(MAX_DISPLAY_NAME),
-  email: z.email().max(254).optional(),
+  email: registrationEmailSchema,
 });
 
 const registrationIdParamsSchema = z.object({ id: z.string().min(1).max(64) });
@@ -431,7 +446,7 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
           addressProof: "xaman_signin",
           signinPayloadUuid: signinUuid,
           ...(displayName === undefined ? {} : { displayName }),
-          ...(email === undefined ? {} : { email }),
+          email,
         });
 
         request.log.info(
@@ -556,7 +571,7 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
         );
       }
 
-      const message = registrationMessage({ eventId, address, displayName, email: email ?? null, challenge });
+      const message = registrationMessage({ eventId, address, displayName, email, challenge });
       const signed = near
         ? isSignedByImplicitAccount({ accountId: address, publicKey, signature, message })
         : isSignedByAddress({ address, publicKey, signature, message });
@@ -593,7 +608,7 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
           address,
           addressProof: near ? "near_signature" : "wallet_signature",
           displayName,
-          ...(email === undefined ? {} : { email }),
+          email,
         });
         request.log.info(
           { eventId, address, registrationId: created.id },
@@ -670,7 +685,7 @@ export function registerRegistrationRoutes(app: FastifyInstance, deps: ApiDeps):
           address: accountId,
           addressProof: "self_declared",
           displayName,
-          ...(email === undefined ? {} : { email }),
+          email,
         });
         request.log.info({ eventId, address: accountId, registrationId: created.id }, "NEAR registration created");
         return reply.code(201).send({ registration: toRegistrationView(created, event) });

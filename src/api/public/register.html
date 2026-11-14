@@ -362,12 +362,6 @@ html.dev .wrap{padding-top:12px}
 /* ---- the form ------------------------------------------------------------- */
 .field{margin-top:18px}
 .field > .label{display:flex; align-items:baseline; gap:8px; margin-bottom:7px}
-/* Marks a field a guest may skip. Only the email has one; a form where every
-   label carries a badge tells you nothing. */
-.field .opt{
-  font-size:12.5px; color:var(--ink-3); font-weight:600;
-  background:var(--surface-2); border-radius:999px; padding:2px 9px;
-}
 /* 16px is not a taste decision: anything smaller and iOS Safari zooms the page
    on focus, which on this form means the dock button scrolls out of reach. */
 .field input{
@@ -905,14 +899,14 @@ a{color:var(--jade)}
         </div>
 
         <div class="field">
-          <label class="label" for="em"><span>Email</span><span class="opt">Optional</span></label>
+          <label class="label" for="em"><span>Email</span></label>
           <input id="em" name="email" type="email" maxlength="254" autocomplete="email"
                  inputmode="email" spellcheck="false" autocapitalize="off"
-                 placeholder="you@example.com">
+                 placeholder="you@example.com" required aria-required="true">
           <p class="field__why">
-            <b>Leave it blank if you would rather.</b> Nothing about your badge changes. Its only
-            use is so the organiser can reach you about the event. It is never shown publicly,
-            never printed on the badge, and never passed to anyone else.
+            So the organiser can reach you about the event, and send your pass for the door when
+            there is one. It is never shown publicly, never printed on the badge, and never passed
+            to anyone else.
           </p>
         </div>
       </form>
@@ -1443,7 +1437,7 @@ a{color:var(--jade)}
     }
     if (app.face === "details") {
       return { label: app.busy ? "Registering…" : "Complete my registration",
-               note: isNear() ? "sends your account and name — never a secret" : "sends your name — never a secret" };
+               note: isNear() ? "sends your account, name and email — never a secret" : "sends your name and email — never a secret" };
     }
     return null;
   }
@@ -1920,17 +1914,24 @@ a{color:var(--jade)}
       focusField("dn");
       return;
     }
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!email) {
+      showLocalError("details-err", "CHECK_THE_EMAIL",
+        "We need your email",
+        "The organiser uses it to reach you about the event, and to send your pass for the door when there is one.",
+        "It is never shown publicly or printed on the badge.");
+      focusField("em");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       showLocalError("details-err", "CHECK_THE_EMAIL",
         "That email does not look finished",
         "\u201c" + email + "\u201d is not quite an address \u2014 it needs something either side of the @, and a dot in the part after it.",
-        "Fix the typo, or clear the field \u2014 it is optional.");
+        "Fix the typo and press again.");
       focusField("em");
       return;
     }
 
-    var body = { accountId: account, displayName: name };
-    if (email) body.email = email;
+    var body = { accountId: account, displayName: name, email: email };
     app.busy = true;
     paintDock();
     call("POST", "/api/events/" + encodeURIComponent(String(app.eventId)) + "/registrations/near", body)
@@ -1984,13 +1985,19 @@ a{color:var(--jade)}
       return;
     }
 
-    // Blank is allowed. A typo is not: silently dropping "priya@gmail" would
-    // leave the organiser thinking they can reach somebody they cannot.
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!email) {
+      showLocalError("details-err", "CHECK_THE_EMAIL",
+        "We need your email",
+        "The organiser uses it to reach you about the event, and to send your pass for the door when there is one.",
+        "It is never shown publicly or printed on the badge.");
+      focusField("em");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       showLocalError("details-err", "CHECK_THE_EMAIL",
         "That email does not look finished",
         "\u201c" + email + "\u201d is not quite an address \u2014 it needs something either side of the @, and a dot in the part after it.",
-        "Fix the typo, or clear the field \u2014 it is optional.");
+        "Fix the typo and press again.");
       focusField("em");
       return;
     }
@@ -2005,9 +2012,7 @@ a{color:var(--jade)}
        a page that sends an address is a page whose author misunderstood the
        design. `signinUuid` is the whole credential.
        ------------------------------------------------------------------ */
-    var body = { signinUuid: app.signin.uuid };
-    if (name) body.displayName = name;
-    if (email) body.email = email;
+    var body = { signinUuid: app.signin.uuid, displayName: name, email: email };
 
     app.busy = true;
     paintDock();

@@ -562,11 +562,11 @@ describe("registering for a NEAR event", () => {
     expect(ch.statusCode).toBe(201);
     const { challenge } = ch.json();
 
-    const message = registrationMessage({ eventId: NEAR_EVENT, address: accountId, displayName: "Priya", email: null, challenge });
+    const message = registrationMessage({ eventId: NEAR_EVENT, address: accountId, displayName: "Priya", email: "priya@example.test", challenge });
     const res = await app.inject({
       method: "POST",
       url: `/api/events/${NEAR_EVENT}/registrations/wallet`,
-      payload: { address: accountId, publicKey: wallet.publicKey, signature: wallet.sign(message), challenge, displayName: "Priya" },
+      payload: { address: accountId, publicKey: wallet.publicKey, signature: wallet.sign(message), challenge, displayName: "Priya", email: "priya@example.test" },
     });
     expect(res.statusCode).toBe(201);
     expect((await registrations.findByAddress(NEAR_EVENT, accountId))?.addressProof).toBe("near_signature");
@@ -580,11 +580,11 @@ describe("registering for a NEAR event", () => {
     const { challenge } = (
       await app.inject({ method: "POST", url: `/api/events/${NEAR_EVENT}/registrations/challenge`, payload: { address: accountId } })
     ).json();
-    const message = registrationMessage({ eventId: NEAR_EVENT, address: accountId, displayName: "Priya", email: null, challenge });
+    const message = registrationMessage({ eventId: NEAR_EVENT, address: accountId, displayName: "Priya", email: "priya@example.test", challenge });
     const res = await app.inject({
       method: "POST",
       url: `/api/events/${NEAR_EVENT}/registrations/wallet`,
-      payload: { address: accountId, publicKey: impostor.publicKey, signature: impostor.sign(message), challenge, displayName: "Priya" },
+      payload: { address: accountId, publicKey: impostor.publicKey, signature: impostor.sign(message), challenge, displayName: "Priya", email: "priya@example.test" },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -600,7 +600,7 @@ describe("registering for a NEAR event", () => {
     const ok = await app.inject({
       method: "POST",
       url: `/api/events/${NEAR_EVENT}/registrations/near`,
-      payload: { accountId: "alice.testnet", displayName: "Alice" },
+      payload: { accountId: "alice.testnet", displayName: "Alice", email: "alice@example.test" },
     });
     expect(ok.statusCode).toBe(201);
     expect((await registrations.findByAddress(NEAR_EVENT, "alice.testnet"))?.addressProof).toBe("self_declared");
@@ -608,17 +608,28 @@ describe("registering for a NEAR event", () => {
     const typo = await app.inject({
       method: "POST",
       url: `/api/events/${NEAR_EVENT}/registrations/near`,
-      payload: { accountId: "alcie.testnet", displayName: "Alice" },
+      payload: { accountId: "alcie.testnet", displayName: "Alice", email: "alice@example.test" },
     });
     expect(typo.statusCode).toBe(400);
     expect(typo.json().error.message).toMatch(/no NEAR account called alcie.testnet/);
+  });
+
+  it("will not take a typed account without an email", async () => {
+    const res = await server().inject({
+      method: "POST",
+      url: `/api/events/${NEAR_EVENT}/registrations/near`,
+      payload: { accountId: "alice.testnet", displayName: "Alice" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toContain("An email is required to register.");
+    expect(await registrations.findByAddress(NEAR_EVENT, "alice.testnet")).toBeNull();
   });
 
   it("will not take a typed NEAR account for an XRPL event", async () => {
     const res = await server().inject({
       method: "POST",
       url: `/api/events/${XRPL_EVENT}/registrations/near`,
-      payload: { accountId: "alice.testnet", displayName: "Alice" },
+      payload: { accountId: "alice.testnet", displayName: "Alice", email: "alice@example.test" },
     });
     expect(res.statusCode).toBe(400);
   });
