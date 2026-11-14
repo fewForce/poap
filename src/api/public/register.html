@@ -2119,7 +2119,7 @@ a{color:var(--jade)}
     /* One line: what happens next, in the order it happens. */
     var venue = ev.venue ? String(ev.venue) : "the event";
     setText("done-next", isNear()
-      ? "Open your pass at " + venue + " and show it to whoever is on the door: your badge goes straight into this NEAR account. It is yours to keep, and it cannot be passed on to anyone else."
+      ? "At " + venue + ", show your pass to whoever is on the door: your badge goes straight into this NEAR account. It is yours to keep, and it cannot be passed on to anyone else."
       : "Bring this wallet to " + venue + ", show it to whoever is on the door, and your badge is handed straight to it. It is yours to keep, and it cannot be passed on to anyone else.");
 
     /* An Apple Wallet pass is emailed when the server can send one and they
@@ -2130,7 +2130,9 @@ a{color:var(--jade)}
       var nx = $("done-next");
       nx.appendChild(document.createTextNode(" "));
       nx.appendChild(node("b", null, "Your Apple Wallet pass is on its way to " + typedEmail + "."));
-      nx.appendChild(document.createTextNode(" Add it to Wallet and show it at the desk instead."));
+      nx.appendChild(document.createTextNode(isNear()
+        ? " Add it to Wallet: it is your pass for the door."
+        : " Add it to Wallet and show it at the desk instead."));
     }
 
     /* The pass, for this event, on this phone. Registering and turning up are
@@ -2139,7 +2141,10 @@ a{color:var(--jade)}
        their way to another page by hand. */
     var onward = $("done-onward");
     var pass = $("done-pass");
-    if (onward && pass && app.eventId !== null) {
+    /* Not for NEAR: the web pass would only show an account typed on a web
+       page, which anyone could type. Their pass is the emailed one. */
+    if (onward && isNear()) onward.hidden = true;
+    if (onward && pass && app.eventId !== null && !isNear()) {
       pass.setAttribute("href", "/attend/" + encodeURIComponent(String(app.eventId)));
       setText("done-pass-note", ev.status === "live"
         ? "show this at the door"

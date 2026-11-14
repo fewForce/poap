@@ -478,19 +478,6 @@ code,.mono{font-family:var(--font-mono)}
 .err--warn{border-left-color:var(--signal); background:var(--signal-wash)}
 .err--warn .err__code{color:var(--signal)}
 .retry{margin-top:15px; display:flex; gap:9px; flex-wrap:wrap}
-/* The NEAR account box: the only text input on the pass, drawn as
-   register.html draws its fields. 16px+ so iOS does not zoom on focus. */
-.field{margin-top:20px}
-.field > .label{display:block; margin-bottom:7px}
-.field input{
-  display:block; width:100%; font-family:var(--font-mono); font-size:16.5px; line-height:1.4;
-  padding:14px 15px; border:1px solid var(--rule-2); border-radius:12px;
-  background:var(--surface); color:var(--ink); min-height:52px;
-  transition:border-color .15s ease, box-shadow .15s ease;
-}
-.field input:focus{outline:none; border-color:var(--jade); box-shadow:0 0 0 3px var(--jade-wash)}
-.field input::placeholder{color:var(--ink-3); opacity:.7}
-
 /* ---- the last resort ------------------------------------------------------
    One sentence of help and somewhere to paste. Deliberately not a form: no
    uppercase label, no format rule, no monospace placeholder shouting hex. */
@@ -1006,26 +993,15 @@ a{color:var(--jade)}
       <div id="prove-err"></div>
     </div>
 
-    <!-- ============ NEAR · which account ============ -->
-    <div class="face" data-face="nearacct" hidden>
-      <div class="face__eyebrow"><span class="label">First</span></div>
-      <h1>Your <em>NEAR</em> account.</h1>
-      <p class="prose">
-        This event&rsquo;s badge goes straight into a NEAR account. Type yours, show the pass to the
-        desk, and the badge arrives &mdash; <strong>nothing to approve, nothing to pay</strong>.
-      </p>
-      <form class="field" id="near-form" novalidate autocomplete="off">
-        <label class="label" for="near-acct">Account</label>
-        <input id="near-acct" type="text" inputmode="email" spellcheck="false"
-               autocapitalize="off" autocorrect="off" placeholder="alice.testnet">
-      </form>
-      <p class="note note--key">
-        <b>Check it letter by letter.</b> A badge can never be moved once it is issued: sent to the
-        wrong account, it stays there for good. You will never be asked for a key or a recovery
-        phrase &mdash; this page could not use one.
+    <!-- ============ NEAR · no pass is made here ============ -->
+    <div class="face" data-face="nearpass" hidden>
+      <div class="face__eyebrow"><span class="label">Your pass</span></div>
+      <h1>Your pass comes <em>with your registration</em>.</h1>
+      <p class="prose" id="nearpass-lede">
+        This event&rsquo;s badge goes straight into a NEAR account, so the pass the desk scans is
+        tied to your registration rather than typed in here.
       </p>
       <p class="note">Using the POAP app? It shows your pass by itself, with your account already in it.</p>
-      <div id="near-err"></div>
     </div>
 
     <!-- ============ 2 & 3 · the pass, waiting for the desk ============ -->
@@ -2224,7 +2200,7 @@ a{color:var(--jade)}
     closed:      ["Not open", "warn"],
     unavailable: ["Not ready", "warn"],
     prove:       ["Step one", "live"],
-    nearacct:    ["Step one", "live"],
+    nearpass:    ["Your pass", "neutral"],
     wait:        ["Waiting for the desk", "live"],
     offer:       ["Step two", "live"],
     record:      ["Collecting your badge", "live"],
@@ -2242,7 +2218,7 @@ a{color:var(--jade)}
     setText("ribbon", meta[0]);
     $("pass").setAttribute("data-tone", meta[1]);
 
-    var hasWallet = !!app.address && name !== "prove" && name !== "nearacct" && name !== "picker" && name !== "closed";
+    var hasWallet = !!app.address && name !== "prove" && name !== "nearpass" && name !== "picker" && name !== "closed";
     show("perf", hasWallet);
     show("stub", hasWallet);
     var wp = $("wait-plate");
@@ -2258,7 +2234,10 @@ a{color:var(--jade)}
   /* The dock holds exactly one primary action, and mid-Xaman on a coarse
      pointer that action is an anchor (the deeplink) rather than a button. */
   function dockMode() {
-    if (app.face === "nearacct") return { label: "Show my pass", note: "nothing to approve · nothing to pay" };
+    if (app.face === "nearpass") {
+      return { href: "/register/" + encodeURIComponent(String(app.eventId)), label: "Register for this event",
+               note: nearPassesByEmail() ? "your pass comes by email" : "then show the pass in the POAP app" };
+    }
     if (isNear()) return null;   /* the desk mints; there is nothing for a thumb to do */
     if (app.face === "prove") {
       if (!app.signin) {
@@ -2505,7 +2484,7 @@ a{color:var(--jade)}
   }
 
   function tickFn() {
-    if (isNear()) return (app.face === "wait" && app.address) ? pollNear : null;
+    if (isNear()) return null;   /* nothing is waited for on this page */
     if (app.face === "prove" && app.signin) return pollProve;
     if (app.face === "wait" && app.address && !app.demoOff) return pollLookup;
     if (app.face === "offer" && app.claim && app.claim.xaman) return pollOffer;
@@ -3613,8 +3592,7 @@ a{color:var(--jade)}
 
     setText("art-hero-cap", "your badge · " + (app.event && app.event.name ? app.event.name : "event " + app.eventId));
     paintArt("art-hero", "art-hero-img");
-    if (isNear()) paintNearStub();
-    else paintStub();     /* the stub's "can this wallet receive a badge" line is spent */
+    paintStub();     /* the stub's "can this wallet receive a badge" line is spent */
     showFace("done");
     if (!isNear()) openShop();   /* the store spends XRP; a NEAR attendee has none from us */
   }
@@ -4510,90 +4488,32 @@ a{color:var(--jade)}
   }
 
   /* ======================================================================
-     NEAR. The badge contract mints straight into the attendee's account, so
-     the pass is only the account as a QR for the desk, and a watch on the
-     index for the moment the desk has minted. Nothing is signed here: an
-     account typed on a web page is the attendee's word, and the desk will
-     not mint to a named account that does not exist.
+     NEAR. No pass is made on this page. The desk mints straight into the
+     account a pass names, and an account typed on a web page is anybody's
+     word: anyone could type anyone's. So a NEAR attendee's pass comes from
+     registering (the emailed Apple Wallet pass, whose code is tied to the
+     registration) or from the POAP app, which proves its account by signing.
      ====================================================================== */
-  var NEAR_RE = /^(?=.{2,64}$)(([a-z\d]+[-_])*[a-z\d]+\.)*([a-z\d]+[-_])*[a-z\d]+$/;
-
   function isNear() { return !!(app.event && app.event.chain === "near"); }
 
-  function nearNetwork() {
-    return app.health && app.health.near && app.health.near.network === "mainnet" ? "mainnet" : "testnet";
-  }
-
-  /** Whether an account id can be on this event's network: implicit, or ending in its suffix. */
-  function nearFits(a) {
-    if (!NEAR_RE.test(a) || a.indexOf("0x") === 0) return false;
-    if (/^[0-9a-f]{64}$/.test(a)) return true;
-    // The server's own rule (src/near/account.ts fitsNetwork): testnet names
-    // end in .testnet, and on mainnet any name that does not (alice.near, alice.tg).
-    var testnetName = a === "testnet" || a.slice(-8) === ".testnet";
-    return nearNetwork() === "mainnet" ? !testnetName : testnetName;
+  /** Whether registering here gets the attendee a pass by email. */
+  function nearPassesByEmail() {
+    return !!(app.health && app.health.walletPasses && app.health.walletPasses.email);
   }
 
   function resumeNear() {
-    var kept = ssGet(ssKey("address")) || lsGet(ssKey("address"));
-    app.address = (kept && nearFits(kept)) ? kept : null;
-    $("near-acct").placeholder = nearNetwork() === "mainnet" ? "alice.near" : "alice.testnet";
+    /* An account remembered by an earlier version of this page is dropped:
+       it would only bring back the typed pass. */
+    forgetWallet();
+    app.address = null;
+    setText("nearpass-lede", nearPassesByEmail()
+      ? "This event\u2019s badge goes straight into a NEAR account, so the pass the desk scans is tied to " +
+        "your registration rather than typed in here. Register, and we email you an Apple Wallet pass to " +
+        "show at the desk. Already registered? Look for that email, and check spam."
+      : "This event\u2019s badge goes straight into a NEAR account, so the pass the desk scans is tied to " +
+        "your registration rather than typed in here. Register with the POAP app, and it shows your pass.");
     paintStrip();
-    if (!app.address) { showFace("nearacct"); return; }
-    showNearPass();
-  }
-
-  function submitNearAccount() {
-    clearError("near-err");
-    var a = String($("near-acct").value || "").trim().toLowerCase();
-    if (!a) { $("near-acct").focus(); return; }
-    if (!nearFits(a)) {
-      showLocalError("near-err", "INVALID_ADDRESS",
-        "That is not a NEAR account on " + nearNetwork() + ".",
-        nearNetwork() === "mainnet"
-          ? "A NEAR account looks like alice.near, or a 64-character code from your wallet."
-          : "A testnet account looks like alice.testnet, or a 64-character code from your wallet.");
-      $("near-acct").focus();
-      return;
-    }
-    rememberAddress(a);
-    app.address = a;
-    showNearPass();
-  }
-
-  function showNearPass() {
-    app.qrFor = null;
-    paintAddressQr();
-    paintNearStub();
-    paintStrip();
-    paintArt("art-preview", "art-preview-img");
-    setText("wait-sub", "They scan it, and your badge goes straight into this account.");
-    var waitNote = document.querySelector('[data-face="wait"] > .note');
-    if (waitNote) {
-      clear(waitNote);
-      waitNote.appendChild(node("b", null, "Nothing has been issued to you yet. "));
-      waitNote.appendChild(document.createTextNode(
-        "When the desk issues the badge it lands in this account straight away, and this page turns into your receipt. " +
-        "There is nothing to accept."));
-    }
-    checkAttended(function (attended) {
-      if (!attended) showFace("wait");
-    });
-  }
-
-  function paintNearStub() {
-    setText("stub-addr-v", app.address || "—");
-    var lbl = document.querySelector("#stub-addr .label > span");
-    if (lbl) lbl.textContent = "your NEAR account";
-    setText("stub-swap", "Not your account? Use a different one");
-    setText("stub-note", "");
-  }
-
-  /** The desk mints; this only notices. One index read per tick, no chain call. */
-  function pollNear() {
-    if (app.inFlight) return;
-    app.inFlight = true;
-    checkAttended(function () { app.inFlight = false; });
+    showFace("nearpass");
   }
 
   /**
@@ -4654,7 +4574,6 @@ a{color:var(--jade)}
   }
 
   function onAct() {
-    if (app.face === "nearacct") { submitNearAccount(); return; }
     if (app.face === "prove") startSignIn({ thenOpen: true });
     else if (app.face === "wait") requestAccept({ thenOpen: true });
     else if (app.face === "offer") requestAccept({ thenOpen: true });
@@ -4678,7 +4597,6 @@ a{color:var(--jade)}
     }
 
     $("act").addEventListener("click", onAct);
-    $("near-form").addEventListener("submit", function (ev) { ev.preventDefault(); submitNearAccount(); });
     $("stub-addr").addEventListener("click", copyAddress);
     $("stub-swap").addEventListener("click", function () {
       /* The pass remembers a wallet now, so somebody holding a phone that is
@@ -4687,13 +4605,7 @@ a{color:var(--jade)}
       forgetWallet();
       show("stub", false);
       show("perf", false);
-      if (isNear()) {
-        app.address = null;
-        $("near-acct").value = "";
-        showFace("nearacct");
-        paintStrip();
-        return;
-      }
+      if (isNear()) { resumeNear(); return; }
       showFace("prove");
       paintProve();
       paintStrip();
